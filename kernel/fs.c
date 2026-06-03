@@ -26,6 +26,22 @@ struct file_desc {
 static struct fs_node nodes[FS_MAX_NODES];
 static struct file_desc fds[FS_MAX_FD];
 
+static const char *absolute_path(const char *path, char *buf, size_t len) {
+    if (!path || !path[0]) {
+        return "/";
+    }
+    if (path[0] == '/') {
+        return path;
+    }
+    if (len < 2) {
+        return path;
+    }
+    buf[0] = '/';
+    strncpy(buf + 1, path, len - 2);
+    buf[len - 1] = 0;
+    return buf;
+}
+
 static int alloc_node(node_type_t type, const char *name, int parent) {
     for (int i = 1; i < FS_MAX_NODES; i++) {
         if (nodes[i].type == FS_UNUSED) {
@@ -50,6 +66,8 @@ static int child_find(int parent, const char *name) {
 }
 
 static int path_walk(const char *path) {
+    char abs[128];
+    path = absolute_path(path, abs, sizeof(abs));
     if (!path || path[0] != '/') {
         return -1;
     }
@@ -77,6 +95,8 @@ static int path_walk(const char *path) {
 }
 
 static int path_parent(const char *path, char *leaf, size_t leaf_len) {
+    char abs[128];
+    path = absolute_path(path, abs, sizeof(abs));
     if (!path || path[0] != '/') {
         return -1;
     }

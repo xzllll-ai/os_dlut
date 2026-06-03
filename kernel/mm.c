@@ -12,8 +12,6 @@ static u8 page_used[MAX_PAGES];
 static u8 managed_memory[MANAGED_MEMORY_SIZE] __attribute__((aligned(PAGE_SIZE)));
 static u64 kernel_pagetable[512] __attribute__((aligned(PAGE_SIZE)));
 static u64 l1_kernel[512] __attribute__((aligned(PAGE_SIZE)));
-static u64 l0_kernel[512] __attribute__((aligned(PAGE_SIZE)));
-static u64 l0_mmio[512] __attribute__((aligned(PAGE_SIZE)));
 
 static u64 pte_pa(void *p) {
     return ((u64)p >> 12) << 10;
@@ -28,26 +26,16 @@ static void map_2m(u64 va, u64 pa, u64 flags) {
     l1_kernel[vpn1] = (pa >> 12) << 10 | flags | PTE_V | PTE_A | PTE_D;
 }
 
-static void map_mmio_4k(u64 va, u64 pa, u64 flags) {
-    u64 vpn2 = (va >> 30) & 0x1ff;
-    u64 vpn1 = (va >> 21) & 0x1ff;
-    u64 vpn0 = (va >> 12) & 0x1ff;
-    kernel_pagetable[vpn2] = pte_pa(l1_kernel) | PTE_V;
-    l1_kernel[vpn1] = pte_pa(l0_mmio) | PTE_V;
-    l0_mmio[vpn0] = (pa >> 12) << 10 | flags | PTE_V | PTE_A | PTE_D;
-}
-
 void vm_enable_kernel_pagetable(void) {
     memset(kernel_pagetable, 0, sizeof(kernel_pagetable));
     memset(l1_kernel, 0, sizeof(l1_kernel));
-    memset(l0_kernel, 0, sizeof(l0_kernel));
-    memset(l0_mmio, 0, sizeof(l0_mmio));
     for (u64 off = 0; off < KERNEL_MAP_SIZE; off += 2UL * 1024UL * 1024UL) {
         map_2m(0x80000000UL + off, 0x80000000UL + off, PTE_R | PTE_W | PTE_X);
     }
-    map_mmio_4k(UART0, UART0, PTE_R | PTE_W);
-    map_mmio_4k(CLINT_MTIME, CLINT_MTIME, PTE_R | PTE_W);
-    map_mmio_4k(CLINT_MTIMECMP(0), CLINT_MTIMECMP(0), PTE_R | PTE_W);
+    map_2m(UART0, UART0, PTE_R | PTE_W);
+    map_2m(CLINT, CLINT, PTE_R | PTE_W);
+    map_2m(PLIC, PLIC, PTE_R | PTE_W);
+    map_2m(PLIC + 0x200000UL, PLIC + 0x200000UL, PTE_R | PTE_W);
     w_satp(SATP_SV39 | ((u64)kernel_pagetable >> 12));
     sfence_vma();
 }

@@ -6,6 +6,7 @@
 #define NPROC 32
 #define PROC_NAME_MAX 24
 #define PROC_QUANTUM_MS 10
+#define USER_STACK_SIZE 4096
 
 typedef enum {
     PROC_UNUSED,
@@ -30,9 +31,11 @@ struct proc {
     program_entry_t entry;
     int argc;
     char *argv[8];
+    char arg_storage[8][32];
     int exit_code;
     u64 runtime_ticks;
     u64 quantum_left;
+    u8 user_stack[USER_STACK_SIZE];
 };
 
 struct semaphore {
@@ -46,6 +49,7 @@ struct mutex {
 
 void proc_init(void);
 int proc_spawn(const char *name, program_entry_t entry, int argc, char **argv, int parent);
+int proc_fork(int pid);
 void proc_exit(int pid, int code);
 int proc_wait(int parent, int child);
 int proc_kill(int pid);

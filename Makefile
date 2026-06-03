@@ -21,12 +21,14 @@ SRCS := \
 	kernel/kalloc.c \
 	kernel/main.c \
 	kernel/mm.c \
+	kernel/plic.c \
 	kernel/proc.c \
 	kernel/sbi.c \
 	kernel/shell.c \
 	kernel/syscall.c \
 	kernel/trap.c \
 	kernel/uart.c \
+	kernel/user.c \
 	lib/printf.c \
 	lib/string.c
 

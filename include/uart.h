@@ -5,5 +5,6 @@ void uart_init(void);
 void uart_putc(int ch);
 int uart_getc(void);
 int uart_getc_nonblock(void);
+void uart_intr(void);
 
 #endif

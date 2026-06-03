@@ -60,10 +60,11 @@ m_trap_vector:
 s_trap_vector:
     addi sp, sp, -272
     sd ra, 0(sp)
-    sd sp, 8(sp)
+    sd t0, 32(sp)
+    addi t0, sp, 272
+    sd t0, 8(sp)
     sd gp, 16(sp)
     sd tp, 24(sp)
-    sd t0, 32(sp)
     sd t1, 40(sp)
     sd t2, 48(sp)
     sd s0, 56(sp)
@@ -130,8 +131,55 @@ s_trap_vector:
     ld t4, 224(sp)
     ld t5, 232(sp)
     ld t6, 240(sp)
-    addi sp, sp, 272
+    ld sp, 8(sp)
     sret
+
+    .globl user_enter
+user_enter:
+    la t0, user_saved_sp
+    sd sp, 0(t0)
+    la t0, user_saved_ra
+    sd ra, 0(t0)
+    la t0, user_saved_s
+    sd s0, 0(t0)
+    sd s1, 8(t0)
+    sd s2, 16(t0)
+    sd s3, 24(t0)
+    sd s4, 32(t0)
+    sd s5, 40(t0)
+    sd s6, 48(t0)
+    sd s7, 56(t0)
+    sd s8, 64(t0)
+    sd s9, 72(t0)
+    sd s10, 80(t0)
+    sd s11, 88(t0)
+    csrr t0, satp
+    la t1, user_kernel_satp
+    sd t0, 0(t1)
+    la t0, user_resume
+    la t1, user_resume_pc
+    sd t0, 0(t1)
+    csrw satp, zero
+    sfence.vma
+    csrw sepc, a0
+    csrr t0, sstatus
+    li t1, 256
+    not t1, t1
+    and t0, t0, t1
+    ori t0, t0, 32
+    csrw sstatus, t0
+    mv t2, a1
+    mv a0, a2
+    mv a1, a3
+    mv a2, a4
+    mv sp, t2
+    sret
+user_resume:
+    la t0, user_kernel_satp
+    ld t1, 0(t0)
+    csrw satp, t1
+    sfence.vma
+    ret
 
     .section .bss
     .align 12

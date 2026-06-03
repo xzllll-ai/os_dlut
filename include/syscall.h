@@ -14,6 +14,7 @@ enum {
     SYS_read,
     SYS_seek,
     SYS_kill,
+    SYS_fwrite,
 };
 
 u64 syscall_dispatch(struct trapframe *tf);

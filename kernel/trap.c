@@ -1,9 +1,11 @@
 #include "console.h"
 #include "mm.h"
+#include "plic.h"
 #include "proc.h"
 #include "riscv.h"
 #include "syscall.h"
 #include "trap.h"
+#include "user.h"
 
 extern void s_trap_vector(void);
 extern void m_trap_vector(void);
@@ -59,6 +61,10 @@ void m_trap_handler(void) {
 
 void s_trap_handler(struct trapframe *tf) {
     u64 cause = r_scause();
+    if ((cause & IRQ_FLAG) && ((cause & 0xff) == IRQ_S_EXTERNAL)) {
+        plic_handle();
+        return;
+    }
     if (!(cause & IRQ_FLAG)) {
         switch (cause) {
         case CAUSE_ECALL_U:
@@ -69,6 +75,13 @@ void s_trap_handler(struct trapframe *tf) {
         case CAUSE_INST_PAGE_FAULT:
         case CAUSE_LOAD_PAGE_FAULT:
         case CAUSE_STORE_PAGE_FAULT:
+            if ((tf->status & SSTATUS_SPP) == 0 && proc_current()) {
+                printf("[trap] user page fault pid=%d va=%p cause=%u\n",
+                       proc_current()->pid, r_stval(), cause);
+                proc_exit(proc_current()->pid, -1);
+                user_return_to_kernel(tf);
+                return;
+            }
             if (vm_handle_page_fault(r_stval(), cause) == 0) {
                 return;
             }
@@ -79,6 +92,13 @@ void s_trap_handler(struct trapframe *tf) {
             }
             break;
         default:
+            if ((tf->status & SSTATUS_SPP) == 0 && proc_current()) {
+                printf("[trap] user exception pid=%d cause=%u epc=%p\n",
+                       proc_current()->pid, cause, tf->epc);
+                proc_exit(proc_current()->pid, -1);
+                user_return_to_kernel(tf);
+                return;
+            }
             break;
         }
     }

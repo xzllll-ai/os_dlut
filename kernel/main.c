@@ -2,6 +2,7 @@
 #include "elf.h"
 #include "fs.h"
 #include "mm.h"
+#include "plic.h"
 #include "proc.h"
 #include "riscv.h"
 #include "shell.h"
@@ -19,6 +20,7 @@ void kernel_main(void) {
     proc_init();
     fs_init();
     user_programs_init();
+    plic_init();
     trap_init();
 
     puts("[init] trap vector, timer, RAMFS, scheduler and syscall table ready\n");

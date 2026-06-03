@@ -52,7 +52,7 @@ static void read_line(char *buf, size_t n) {
 }
 
 static void help(void) {
-    puts("commands: help ls cat echo ps kill exec progs sched mem touch write rm ticks clear\n");
+    puts("commands: help ls cat echo ps kill fork wait exec progs sched mem touch write rm ticks clear\n");
 }
 
 static void run_exec(int argc, char **argv) {
@@ -88,7 +88,51 @@ static void run_pipeline(char *line) {
     }
 }
 
+static char *trim(char *s) {
+    while (*s == ' ' || *s == '\t') {
+        s++;
+    }
+    char *end = s + strlen(s);
+    while (end > s && (end[-1] == ' ' || end[-1] == '\t')) {
+        *--end = 0;
+    }
+    return s;
+}
+
+static bool run_redirection(char *line) {
+    char *out = strchr(line, '>');
+    if (out) {
+        *out = 0;
+        char *cmd = trim(line);
+        char *path = trim(out + 1);
+        if (strncmp(cmd, "echo ", 5) == 0 && path[0]) {
+            fs_write_file(path, trim(cmd + 5));
+            return true;
+        }
+        puts("redirect demo supports: echo TEXT > file\n");
+        return true;
+    }
+    char *in = strchr(line, '<');
+    if (in) {
+        *in = 0;
+        char *cmd = trim(line);
+        char *path = trim(in + 1);
+        if (strcmp(cmd, "cat") == 0 && path[0]) {
+            if (fs_cat(path) < 0) {
+                puts("cat: file not found\n");
+            }
+            return true;
+        }
+        puts("redirect demo supports: cat < file\n");
+        return true;
+    }
+    return false;
+}
+
 static void execute(char *line) {
+    if (run_redirection(line)) {
+        return;
+    }
     if (strchr(line, '|')) {
         run_pipeline(line);
         return;
@@ -123,6 +167,24 @@ static void execute(char *line) {
     } else if (strcmp(argv[0], "kill") == 0) {
         if (argc < 2 || proc_kill((int)strtol(argv[1], NULL, 10)) < 0) {
             puts("kill: invalid pid\n");
+        }
+    } else if (strcmp(argv[0], "fork") == 0) {
+        if (argc < 2) {
+            puts("usage: fork pid\n");
+        } else {
+            int pid = proc_fork((int)strtol(argv[1], NULL, 10));
+            if (pid < 0) {
+                puts("fork: invalid pid\n");
+            } else {
+                printf("forked pid=%d\n", pid);
+            }
+        }
+    } else if (strcmp(argv[0], "wait") == 0) {
+        if (argc < 2) {
+            puts("usage: wait pid\n");
+        } else {
+            int code = proc_wait(proc_current() ? proc_current()->pid : 1, (int)strtol(argv[1], NULL, 10));
+            printf("wait -> %d\n", code);
         }
     } else if (strcmp(argv[0], "exec") == 0) {
         run_exec(argc, argv);

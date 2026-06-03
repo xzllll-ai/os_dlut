@@ -4,6 +4,7 @@
 #include "mm.h"
 #include "proc.h"
 #include "string.h"
+#include "syscall.h"
 
 #define EI_NIDENT 16
 #define PT_LOAD 1
@@ -36,10 +37,45 @@ struct elf64_phdr {
     u64 p_align;
 };
 
+static long usys(long id, long a0, long a1, long a2) {
+    register long x0 __asm__("a0") = a0;
+    register long x1 __asm__("a1") = a1;
+    register long x2 __asm__("a2") = a2;
+    register long x7 __asm__("a7") = id;
+    __asm__ volatile("ecall" : "+r"(x0) : "r"(x1), "r"(x2), "r"(x7) : "memory");
+    return x0;
+}
+
+static void uwrite(const char *s) {
+    usys(SYS_write, (long)s, (long)strlen(s), 0);
+}
+
+static void uwrite_dec(long v) {
+    char buf[24];
+    int i = 0;
+    if (v < 0) {
+        uwrite("-");
+        v = -v;
+    }
+    do {
+        buf[i++] = (char)('0' + v % 10);
+        v /= 10;
+    } while (v);
+    while (i--) {
+        usys(SYS_write, (long)&buf[i], 1, 0);
+    }
+}
+
 static int prog_hello(int argc, char **argv) {
-    printf("hello from user program argc=%d\n", argc);
+    uwrite("hello from U-mode user program argc=");
+    uwrite_dec(argc);
+    uwrite("\n");
     for (int i = 0; i < argc; i++) {
-        printf("arg%d=%s\n", i, argv[i]);
+        uwrite("arg");
+        uwrite_dec(i);
+        uwrite("=");
+        uwrite(argv[i]);
+        uwrite("\n");
     }
     return 0;
 }
@@ -47,15 +83,23 @@ static int prog_hello(int argc, char **argv) {
 static int prog_writer(int argc, char **argv) {
     (void)argc;
     (void)argv;
-    fs_write_file("/home/user/generated.txt", "created by writer program\n");
-    printf("writer: /home/user/generated.txt updated\n");
+    const char *path = "/home/user/generated.txt";
+    const char *data = "created by U-mode writer program\n";
+    long fd = usys(SYS_open, (long)path, O_CREAT | O_TRUNC | O_RDWR, 0);
+    if (fd >= 0) {
+        usys(SYS_fwrite, fd, (long)data, (long)strlen(data));
+        usys(SYS_close, fd, 0, 0);
+    }
+    uwrite("writer: /home/user/generated.txt updated\n");
     return 0;
 }
 
 static int prog_counter(int argc, char **argv) {
     int n = argc > 1 ? (int)strtol(argv[1], NULL, 10) : 5;
     for (int i = 0; i < n; i++) {
-        printf("counter %d\n", i);
+        uwrite("counter ");
+        uwrite_dec(i);
+        uwrite("\n");
     }
     return n;
 }
@@ -63,16 +107,21 @@ static int prog_counter(int argc, char **argv) {
 static int prog_fault(int argc, char **argv) {
     (void)argc;
     (void)argv;
-    printf("fault: simulated user crash; kernel will mark process zombie\n");
-    return -1;
+    uwrite("fault: touching unmapped address 0\n");
+    __asm__ volatile(".word 0");
+    return 0;
 }
 
 static int prog_mem(int argc, char **argv) {
     (void)argc;
     (void)argv;
-    void *p = kmalloc(128);
-    printf("memtest: kmalloc=%p free_pages=%u\n", p, page_free_count());
-    kfree(p);
+    char buffer[128];
+    buffer[0] = 'O';
+    buffer[1] = 'K';
+    buffer[2] = 0;
+    uwrite("memtest: user stack/data access ");
+    uwrite(buffer);
+    uwrite("\n");
     return 0;
 }
 
