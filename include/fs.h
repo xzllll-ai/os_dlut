@@ -29,6 +29,7 @@ long fs_seek(int fd, long off, int whence);
 int fs_list(const char *path);
 int fs_cat(const char *path);
 int fs_write_file(const char *path, const char *data);
+int fs_write_data(const char *path, const void *data, size_t size);
 const char *fs_read_file(const char *path, size_t *size);
 
 #endif

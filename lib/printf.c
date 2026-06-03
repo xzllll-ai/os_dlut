@@ -27,9 +27,12 @@ static void vprintf_internal(const char *fmt, va_list ap) {
             continue;
         }
         fmt++;
+        bool longflag = false;
         if (*fmt == 'l' && fmt[1] == 'l') {
+            longflag = true;
             fmt += 2;
         } else if (*fmt == 'l') {
+            longflag = true;
             fmt++;
         }
         switch (*fmt) {
@@ -47,17 +50,17 @@ static void vprintf_internal(const char *fmt, va_list ap) {
             break;
         }
         case 'd':
-            print_uint((u64)va_arg(ap, long), 10, true);
+            print_uint(longflag ? (u64)va_arg(ap, long) : (u64)(long)va_arg(ap, int), 10, true);
             break;
         case 'u':
-            print_uint((u64)va_arg(ap, unsigned long), 10, false);
+            print_uint(longflag ? (u64)va_arg(ap, unsigned long) : (u64)va_arg(ap, unsigned int), 10, false);
             break;
         case 'x':
         case 'p':
             if (*fmt == 'p') {
                 puts("0x");
             }
-            print_uint((u64)va_arg(ap, unsigned long), 16, false);
+            print_uint((*fmt == 'p' || longflag) ? (u64)va_arg(ap, unsigned long) : (u64)va_arg(ap, unsigned int), 16, false);
             break;
         default:
             putchar('%');

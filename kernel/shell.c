@@ -3,6 +3,7 @@
 #include "fs.h"
 #include "mm.h"
 #include "proc.h"
+#include "riscv.h"
 #include "shell.h"
 #include "string.h"
 #include "trap.h"
@@ -52,7 +53,7 @@ static void read_line(char *buf, size_t n) {
 }
 
 static void help(void) {
-    puts("commands: help ls cat echo ps kill fork wait exec progs sched mem touch write rm ticks clear\n");
+    puts("commands: help ls cat echo ps kill fork wait exec progs sched mem bench touch write rm ticks clear\n");
 }
 
 static void run_exec(int argc, char **argv) {
@@ -199,6 +200,13 @@ static void execute(char *line) {
         printf("scheduler=%s quantum=%dms\n", proc_scheduler() == SCHED_RR ? "rr" : "fcfs", PROC_QUANTUM_MS);
     } else if (strcmp(argv[0], "mem") == 0) {
         printf("free pages=%u managed=%uKB\n", page_free_count(), MANAGED_MEMORY_SIZE / 1024);
+    } else if (strcmp(argv[0], "bench") == 0) {
+        char *args[] = {"memtest"};
+        u64 start = r_cycle();
+        int pid = elf_exec_builtin("memtest", 1, args);
+        proc_run_ready();
+        u64 end = r_cycle();
+        printf("bench: pid=%d spawn+u-mode-run cycles=%u\n", pid, end - start);
     } else if (strcmp(argv[0], "touch") == 0) {
         if (argc < 2 || fs_create(argv[1]) < 0) {
             puts("touch: failed\n");

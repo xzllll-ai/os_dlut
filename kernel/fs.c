@@ -281,11 +281,15 @@ int fs_cat(const char *path) {
 }
 
 int fs_write_file(const char *path, const char *data) {
+    return fs_write_data(path, data, strlen(data));
+}
+
+int fs_write_data(const char *path, const void *data, size_t size) {
     int fd = fs_open(path, O_CREAT | O_TRUNC | O_RDWR);
     if (fd < 0) {
         return -1;
     }
-    fs_write(fd, data, strlen(data));
+    fs_write(fd, data, size);
     fs_close(fd);
     return 0;
 }

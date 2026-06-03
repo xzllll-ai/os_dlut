@@ -41,6 +41,8 @@ struct trapframe {
 
 void trap_init(void);
 void timer_init(void);
+void timer_quiesce(void);
+void timer_resume(void);
 u64 ticks(void);
 void m_trap_handler(void);
 void s_trap_handler(struct trapframe *tf);

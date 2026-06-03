@@ -1,4 +1,5 @@
 #include "console.h"
+#include "elf.h"
 #include "fs.h"
 #include "proc.h"
 #include "syscall.h"
@@ -21,7 +22,7 @@ u64 syscall_dispatch(struct trapframe *tf) {
         user_return_to_kernel(tf);
         return 0;
     case SYS_spawn:
-        return (u64)-1;
+        return (u64)elf_exec_builtin((const char *)tf->a0, (int)tf->a1, (char **)tf->a2);
     case SYS_wait:
         return (u64)proc_wait(proc_current() ? proc_current()->pid : 0, (int)tf->a0);
     case SYS_open:

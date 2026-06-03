@@ -17,6 +17,10 @@
 #define PTE_A (1UL << 6)
 #define PTE_D (1UL << 7)
 
+#define USER_STACK_TOP 0x40000000UL
+#define USER_HEAP_BASE 0x50000000UL
+#define USER_HEAP_SIZE (4UL * 1024UL * 1024UL)
+
 void mm_init(void);
 void *page_alloc(void);
 void page_free(void *page);
@@ -24,6 +28,9 @@ size_t page_free_count(void);
 int vm_map(u64 va, u64 pa, u64 size, u64 flags);
 int vm_unmap(u64 va, u64 size);
 int vm_handle_page_fault(u64 va, u64 cause);
+u64 *vm_create_user_pagetable(void);
+int vm_map_user_page(u64 *pagetable, u64 va, u64 pa, u64 flags);
+u64 vm_pagetable_satp(u64 *pagetable);
 void vm_enable_kernel_pagetable(void);
 void *kmalloc(size_t size);
 void kfree(void *ptr);

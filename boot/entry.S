@@ -6,6 +6,7 @@ _start:
     la gp, __global_pointer$
     .option pop
     csrr tp, mhartid
+    mv s0, a1
     la sp, boot_stack_top
     la t0, _bss_start
     la t1, _bss_end
@@ -15,45 +16,43 @@ _start:
     addi t0, t0, 8
     j 1b
 2:
+    la t0, boot_dtb_pa
+    sd s0, 0(t0)
     call m_boot
 
     .globl m_trap_vector
 m_trap_vector:
-    addi sp, sp, -128
-    sd ra, 0(sp)
-    sd t0, 8(sp)
-    sd t1, 16(sp)
-    sd t2, 24(sp)
-    sd a0, 32(sp)
-    sd a1, 40(sp)
-    sd a2, 48(sp)
-    sd a3, 56(sp)
-    sd a4, 64(sp)
-    sd a5, 72(sp)
-    sd a6, 80(sp)
-    sd a7, 88(sp)
-    sd t3, 96(sp)
-    sd t4, 104(sp)
-    sd t5, 112(sp)
-    sd t6, 120(sp)
-    call m_trap_handler
-    ld ra, 0(sp)
-    ld t0, 8(sp)
-    ld t1, 16(sp)
-    ld t2, 24(sp)
-    ld a0, 32(sp)
-    ld a1, 40(sp)
-    ld a2, 48(sp)
-    ld a3, 56(sp)
-    ld a4, 64(sp)
-    ld a5, 72(sp)
-    ld a6, 80(sp)
-    ld a7, 88(sp)
-    ld t3, 96(sp)
-    ld t4, 104(sp)
-    ld t5, 112(sp)
-    ld t6, 120(sp)
-    addi sp, sp, 128
+    csrrw t6, mscratch, t6
+    sd t0, 0(t6)
+    sd t1, 8(t6)
+    sd t2, 16(t6)
+    sd t3, 24(t6)
+    sd t4, 32(t6)
+    sd t5, 40(t6)
+    csrr t0, mcause
+    li t1, 0x8000000000000007
+    bne t0, t1, 3f
+    li t0, 0x0200bff8
+    ld t1, 0(t0)
+    li t2, 100000
+    add t1, t1, t2
+    li t0, 0x02004000
+    sd t1, 0(t0)
+    la t0, timer_ticks
+    ld t1, 0(t0)
+    addi t1, t1, 1
+    sd t1, 0(t0)
+    j 4f
+3:
+    j 3b
+4:
+    ld t0, 0(t6)
+    ld t1, 8(t6)
+    ld t2, 16(t6)
+    ld t3, 24(t6)
+    ld t4, 32(t6)
+    ld t5, 40(t6)
+    csrrw t6, mscratch, t6
     mret
 
     .globl s_trap_vector
@@ -181,8 +180,52 @@ user_resume:
     sfence.vma
     ret
 
+    .globl user_enter_paged
+user_enter_paged:
+    la t0, user_saved_sp
+    sd sp, 0(t0)
+    la t0, user_saved_ra
+    sd ra, 0(t0)
+    la t0, user_saved_s
+    sd s0, 0(t0)
+    sd s1, 8(t0)
+    sd s2, 16(t0)
+    sd s3, 24(t0)
+    sd s4, 32(t0)
+    sd s5, 40(t0)
+    sd s6, 48(t0)
+    sd s7, 56(t0)
+    sd s8, 64(t0)
+    sd s9, 72(t0)
+    sd s10, 80(t0)
+    sd s11, 88(t0)
+    csrr t0, satp
+    la t1, user_kernel_satp
+    sd t0, 0(t1)
+    la t0, user_resume
+    la t1, user_resume_pc
+    sd t0, 0(t1)
+    csrw satp, a2
+    sfence.vma
+    csrw sepc, a0
+    csrr t0, sstatus
+    li t1, 256
+    not t1, t1
+    and t0, t0, t1
+    ori t0, t0, 32
+    csrw sstatus, t0
+    mv sp, a1
+    li a0, 0
+    li a1, 0
+    li a2, 0
+    sret
+
     .section .bss
     .align 12
 boot_stack:
     .space 16384
 boot_stack_top:
+    .align 3
+    .globl m_scratch_area
+m_scratch_area:
+    .space 64

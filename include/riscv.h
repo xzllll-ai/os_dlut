@@ -26,6 +26,7 @@
 #define SIE_SEIE         (1UL << 9)
 #define SSTATUS_SIE      (1UL << 1)
 #define SSTATUS_SPIE     (1UL << 5)
+#define SSTATUS_SUM      (1UL << 18)
 
 #define IRQ_FLAG (1UL << 63)
 #define IRQ_M_TIMER 7
@@ -45,6 +46,7 @@ static inline u64 r_sepc(void) { u64 x; __asm__ volatile("csrr %0, sepc" : "=r"(
 static inline u64 r_stval(void) { u64 x; __asm__ volatile("csrr %0, stval" : "=r"(x)); return x; }
 static inline u64 r_sstatus(void) { u64 x; __asm__ volatile("csrr %0, sstatus" : "=r"(x)); return x; }
 static inline u64 r_satp(void) { u64 x; __asm__ volatile("csrr %0, satp" : "=r"(x)); return x; }
+static inline u64 r_cycle(void) { u64 x; __asm__ volatile("rdcycle %0" : "=r"(x)); return x; }
 
 static inline void w_mtvec(u64 x) { __asm__ volatile("csrw mtvec, %0" : : "r"(x)); }
 static inline void w_mepc(u64 x) { __asm__ volatile("csrw mepc, %0" : : "r"(x)); }
@@ -52,6 +54,7 @@ static inline void w_medeleg(u64 x) { __asm__ volatile("csrw medeleg, %0" : : "r
 static inline void w_mideleg(u64 x) { __asm__ volatile("csrw mideleg, %0" : : "r"(x)); }
 static inline void w_mstatus(u64 x) { __asm__ volatile("csrw mstatus, %0" : : "r"(x)); }
 static inline void w_mie(u64 x) { __asm__ volatile("csrw mie, %0" : : "r"(x)); }
+static inline void w_mscratch(u64 x) { __asm__ volatile("csrw mscratch, %0" : : "r"(x)); }
 static inline void w_pmpaddr0(u64 x) { __asm__ volatile("csrw pmpaddr0, %0" : : "r"(x)); }
 static inline void w_pmpcfg0(u64 x) { __asm__ volatile("csrw pmpcfg0, %0" : : "r"(x)); }
 static inline void w_stvec(u64 x) { __asm__ volatile("csrw stvec, %0" : : "r"(x)); }
@@ -62,6 +65,7 @@ static inline void w_satp(u64 x) { __asm__ volatile("csrw satp, %0" : : "r"(x));
 static inline void sfence_vma(void) { __asm__ volatile("sfence.vma zero, zero"); }
 static inline void intr_on(void) { __asm__ volatile("csrsi sstatus, 2"); }
 static inline void intr_off(void) { __asm__ volatile("csrci sstatus, 2"); }
+static inline void user_access_on(void) { __asm__ volatile("csrs sstatus, %0" : : "r"(SSTATUS_SUM)); }
 static inline void idle_wait(void) { __asm__ volatile("wfi"); }
 
 static inline u8 mmio_read8(u64 addr) { return *(volatile u8 *)addr; }

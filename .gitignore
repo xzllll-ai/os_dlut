@@ -1,5 +1,6 @@
 build/
 rootfs.img
+alpine-linux-riscv64-ext4fs.img
 *.bin
 *.elf
 *.asm

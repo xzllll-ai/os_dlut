@@ -1,6 +1,8 @@
 #include "console.h"
+#include "mm.h"
 #include "proc.h"
 #include "string.h"
+#include "trap.h"
 #include "user.h"
 
 static struct proc procs[NPROC];
@@ -54,6 +56,25 @@ int proc_spawn(const char *name, program_entry_t entry, int argc, char **argv, i
                 procs[i].arg_storage[a][sizeof(procs[i].arg_storage[a]) - 1] = 0;
                 procs[i].argv[a] = procs[i].arg_storage[a];
             }
+            procs[i].exit_code = 0;
+            procs[i].runtime_ticks = 0;
+            procs[i].quantum_left = PROC_QUANTUM_MS;
+            return procs[i].pid;
+        }
+    }
+    return -1;
+}
+
+int proc_spawn_image(const char *name, u64 *pagetable, u64 entry, u64 stack_top, int parent) {
+    for (int i = 0; i < NPROC; i++) {
+        if (procs[i].state == PROC_UNUSED) {
+            procs[i].pid = next_pid++;
+            procs[i].ppid = parent;
+            procs[i].state = PROC_READY;
+            strncpy(procs[i].name, name, PROC_NAME_MAX - 1);
+            procs[i].pagetable = pagetable;
+            procs[i].user_entry = entry;
+            procs[i].user_stack_top = stack_top;
             procs[i].exit_code = 0;
             procs[i].runtime_ticks = 0;
             procs[i].quantum_left = PROC_QUANTUM_MS;
@@ -120,14 +141,20 @@ void proc_tick(void) {
 void proc_run_ready(void) {
     for (int i = 0; i < NPROC; i++) {
         struct proc *p = &procs[i];
-        if (p->state != PROC_READY || !p->entry) {
+        if (p->state != PROC_READY || (!p->entry && !p->user_entry)) {
             continue;
         }
         int prev = current_pid;
         current_pid = p->pid;
         p->state = PROC_RUNNING;
         p->quantum_left = PROC_QUANTUM_MS;
-        user_enter(user_start, p->user_stack + USER_STACK_SIZE, p->entry, p->argc, p->argv);
+        if (p->pagetable) {
+            timer_quiesce();
+            user_enter_paged(p->user_entry, (void *)p->user_stack_top, vm_pagetable_satp(p->pagetable));
+            timer_resume();
+        } else {
+            user_enter(user_start, p->user_stack + USER_STACK_SIZE, p->entry, p->argc, p->argv);
+        }
         if (p->state == PROC_RUNNING) {
             p->exit_code = 0;
             p->state = PROC_ZOMBIE;

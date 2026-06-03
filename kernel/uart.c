@@ -39,7 +39,7 @@ void uart_init(void) {
     mmio_write8(UART0 + 1, 0x00);
     mmio_write8(UART0 + LCR, 0x03);
     mmio_write8(UART0 + FCR, 0x07);
-    mmio_write8(UART0 + IER, 0x01);
+    mmio_write8(UART0 + IER, 0x00);
 }
 
 void uart_putc(int ch) {

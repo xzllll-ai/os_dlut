@@ -9,13 +9,15 @@
 
 extern void s_trap_vector(void);
 extern void m_trap_vector(void);
+extern char m_scratch_area[];
 extern void kernel_main(void);
 
-static volatile u64 timer_ticks;
+volatile u64 timer_ticks;
 static const u64 tick_interval = 100000UL;
 
 void m_boot(void) {
     w_mtvec((u64)m_trap_vector);
+    w_mscratch((u64)m_scratch_area);
     w_pmpaddr0(~0UL);
     w_pmpcfg0(0x0f);
     w_medeleg(0xffff);
@@ -38,9 +40,20 @@ void timer_init(void) {
     mmio_write64(CLINT_MTIMECMP(r_mhartid()), now + tick_interval);
 }
 
+void timer_quiesce(void) {
+    u64 now = mmio_read64(CLINT_MTIME);
+    mmio_write64(CLINT_MTIMECMP(0), now + tick_interval * 100000UL);
+}
+
+void timer_resume(void) {
+    u64 now = mmio_read64(CLINT_MTIME);
+    mmio_write64(CLINT_MTIMECMP(0), now + tick_interval);
+}
+
 void trap_init(void) {
     w_stvec((u64)s_trap_vector);
-    w_sie(SIE_SSIE | SIE_STIE | SIE_SEIE);
+    w_sie(SIE_SSIE | SIE_STIE);
+    user_access_on();
     intr_on();
 }
 
@@ -60,6 +73,7 @@ void m_trap_handler(void) {
 }
 
 void s_trap_handler(struct trapframe *tf) {
+    user_access_on();
     u64 cause = r_scause();
     if ((cause & IRQ_FLAG) && ((cause & 0xff) == IRQ_S_EXTERNAL)) {
         plic_handle();
@@ -76,6 +90,9 @@ void s_trap_handler(struct trapframe *tf) {
         case CAUSE_LOAD_PAGE_FAULT:
         case CAUSE_STORE_PAGE_FAULT:
             if ((tf->status & SSTATUS_SPP) == 0 && proc_current()) {
+                if (vm_handle_page_fault(r_stval(), cause) == 0) {
+                    return;
+                }
                 printf("[trap] user page fault pid=%d va=%p cause=%u\n",
                        proc_current()->pid, r_stval(), cause);
                 proc_exit(proc_current()->pid, -1);

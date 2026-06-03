@@ -36,6 +36,9 @@ struct proc {
     u64 runtime_ticks;
     u64 quantum_left;
     u8 user_stack[USER_STACK_SIZE];
+    u64 *pagetable;
+    u64 user_entry;
+    u64 user_stack_top;
 };
 
 struct semaphore {
@@ -49,6 +52,7 @@ struct mutex {
 
 void proc_init(void);
 int proc_spawn(const char *name, program_entry_t entry, int argc, char **argv, int parent);
+int proc_spawn_image(const char *name, u64 *pagetable, u64 entry, u64 stack_top, int parent);
 int proc_fork(int pid);
 void proc_exit(int pid, int code);
 int proc_wait(int parent, int child);

@@ -5,9 +5,13 @@
 #include "proc.h"
 #include "string.h"
 #include "syscall.h"
+#include "trap.h"
 
 #define EI_NIDENT 16
 #define PT_LOAD 1
+#define PF_X 1
+#define PF_W 2
+#define PF_R 4
 
 struct elf64_ehdr {
     unsigned char e_ident[EI_NIDENT];
@@ -138,7 +142,21 @@ static struct builtin builtins[] = {
     {"memtest", prog_mem},
 };
 
-int elf_load_image(const void *image, size_t len, u64 *entry) {
+static u64 pte_flags_from_elf(u32 flags) {
+    u64 out = PTE_U;
+    if (flags & PF_R) {
+        out |= PTE_R;
+    }
+    if (flags & PF_W) {
+        out |= PTE_W;
+    }
+    if (flags & PF_X) {
+        out |= PTE_X;
+    }
+    return out;
+}
+
+static int elf_load_into_pagetable(const void *image, size_t len, u64 *entry, u64 **pagetable, u64 *stack_top) {
     if (len < sizeof(struct elf64_ehdr)) {
         return -1;
     }
@@ -147,6 +165,10 @@ int elf_load_image(const void *image, size_t len, u64 *entry) {
         return -1;
     }
     if (eh->e_machine != 243) {
+        return -1;
+    }
+    u64 *pt = vm_create_user_pagetable();
+    if (!pt) {
         return -1;
     }
     for (u16 i = 0; i < eh->e_phnum; i++) {
@@ -159,14 +181,46 @@ int elf_load_image(const void *image, size_t len, u64 *entry) {
             if (ph->p_offset + ph->p_filesz > len || ph->p_memsz < ph->p_filesz) {
                 return -1;
             }
-            vm_map(ph->p_vaddr, ph->p_paddr ? ph->p_paddr : ph->p_vaddr,
-                   ALIGN_UP(ph->p_memsz, PAGE_SIZE), PTE_R | PTE_W | PTE_X | PTE_U);
+            u64 start = ALIGN_DOWN(ph->p_vaddr, PAGE_SIZE);
+            u64 end = ALIGN_UP(ph->p_vaddr + ph->p_memsz, PAGE_SIZE);
+            for (u64 va = start; va < end; va += PAGE_SIZE) {
+                void *page = page_alloc();
+                if (!page || vm_map_user_page(pt, va, (u64)page, pte_flags_from_elf(ph->p_flags)) < 0) {
+                    return -1;
+                }
+                u64 copy_start = va > ph->p_vaddr ? va : ph->p_vaddr;
+                u64 copy_end = va + PAGE_SIZE;
+                if (copy_end > ph->p_vaddr + ph->p_filesz) {
+                    copy_end = ph->p_vaddr + ph->p_filesz;
+                }
+                if (copy_start < copy_end) {
+                    memcpy((u8 *)page + (copy_start - va),
+                           (const u8 *)image + ph->p_offset + (copy_start - ph->p_vaddr),
+                           copy_end - copy_start);
+                }
+            }
         }
+    }
+    void *stack = page_alloc();
+    if (!stack || vm_map_user_page(pt, USER_STACK_TOP - PAGE_SIZE, (u64)stack, PTE_R | PTE_W | PTE_U) < 0) {
+        return -1;
     }
     if (entry) {
         *entry = eh->e_entry;
     }
+    if (pagetable) {
+        *pagetable = pt;
+    }
+    if (stack_top) {
+        *stack_top = USER_STACK_TOP;
+    }
     return 0;
+}
+
+int elf_load_image(const void *image, size_t len, u64 *entry) {
+    u64 *pt = NULL;
+    u64 stack = 0;
+    return elf_load_into_pagetable(image, len, entry, &pt, &stack);
 }
 
 int elf_exec_builtin(const char *name, int argc, char **argv) {
@@ -179,9 +233,18 @@ int elf_exec_builtin(const char *name, int argc, char **argv) {
     size_t len;
     const char *image = fs_read_file(name, &len);
     u64 entry = 0;
-    if (image && elf_load_image(image, len, &entry) == 0) {
-        printf("ELF %s parsed, entry=%p; user-mode jump is available for extension\n", name, entry);
-        return 0;
+    u64 *pagetable = NULL;
+    u64 stack_top = 0;
+    if (image) {
+        timer_quiesce();
+    }
+    int loaded = image ? elf_load_into_pagetable(image, len, &entry, &pagetable, &stack_top) : -1;
+    if (image) {
+        timer_resume();
+    }
+    if (loaded == 0) {
+        int parent = proc_current() ? proc_current()->pid : 0;
+        return proc_spawn_image(name, pagetable, entry, stack_top, parent);
     }
     return -1;
 }

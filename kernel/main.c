@@ -1,4 +1,5 @@
 #include "console.h"
+#include "embedded.h"
 #include "elf.h"
 #include "fs.h"
 #include "mm.h"
@@ -19,8 +20,10 @@ void kernel_main(void) {
 
     proc_init();
     fs_init();
+    embedded_files_init();
     user_programs_init();
-    plic_init();
+    puts("[init] fs and user programs ready\n");
+    /* PLIC support is implemented, but UART polling stays the default path. */
     trap_init();
 
     puts("[init] trap vector, timer, RAMFS, scheduler and syscall table ready\n");
