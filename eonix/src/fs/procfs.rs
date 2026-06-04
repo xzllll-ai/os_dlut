@@ -1,0 +1,405 @@
+use crate::kernel::constants::{EACCES, ENOTDIR};
+use crate::kernel::task::block_on;
+use crate::kernel::timer::Instant;
+use crate::kernel::vfs::inode::{AtomicMode, Mode};
+use crate::{
+    io::Buffer,
+    kernel::{
+        mem::paging::PageBuffer,
+        vfs::{
+            dentry::Dentry,
+            inode::{define_struct_inode, AtomicIno, Ino, Inode, InodeData},
+            mount::{dump_mounts, register_filesystem, Mount, MountCreator},
+            vfs::Vfs,
+            DevId,
+        },
+    },
+    prelude::*,
+};
+use alloc::string::ToString;
+use alloc::sync::{Arc, Weak};
+use core::{ops::ControlFlow, sync::atomic::Ordering};
+use eonix_sync::{AsProof as _, AsProofMut as _, LazyLock, Locked};
+use itertools::Itertools;
+
+const TOTAL_MEM: usize = 16251136;
+const FREE_MEM: usize = 327680;
+const BUFFER: usize = 373336;
+const CACHED: usize = 10391984;
+const TOTAL_SWAP: usize = 4194300;
+
+struct DumpMemInfoFile {
+    /// General memory
+    pub total_mem: usize,
+    pub free_mem: usize,
+    pub avail_mem: usize,
+    /// Buffer and cache
+    pub buffers: usize,
+    pub cached: usize,
+    /// Swap space
+    pub total_swap: usize,
+    pub free_swap: usize,
+    /// Share memory
+    pub shmem: usize,
+    pub slab: usize,
+}
+
+impl DumpMemInfoFile {
+    pub const fn new() -> Self {
+        Self {
+            total_mem: TOTAL_MEM,
+            free_mem: FREE_MEM,
+            avail_mem: TOTAL_MEM - FREE_MEM,
+            buffers: BUFFER,
+            cached: CACHED,
+            total_swap: TOTAL_SWAP,
+            free_swap: TOTAL_SWAP,
+            shmem: 0,
+            slab: 0,
+        }
+    }
+}
+
+impl ProcFsFile for DumpMemInfoFile {
+    fn can_read(&self) -> bool {
+        true
+    }
+
+    fn read(&self, buffer: &mut PageBuffer) -> KResult<usize> {
+        let end = " KB\n";
+        let total_mem = "MemTotal:\t".to_string() + self.total_mem.to_string().as_str() + end;
+        let free_mem = "MemFree:\t".to_string() + self.free_mem.to_string().as_str() + end;
+        let avail_mem = "MemAvailable:\t".to_string() + self.avail_mem.to_string().as_str() + end;
+        let buffers = "Buffers:\t".to_string() + self.buffers.to_string().as_str() + end;
+        let cached = "Cached:\t".to_string() + self.cached.to_string().as_str() + end;
+        let cached_swap = "SwapCached:\t".to_string() + 0.to_string().as_str() + end;
+        let total_swap = "SwapTotal:\t".to_string() + self.total_swap.to_string().as_str() + end;
+        let free_swap = "SwapFree:\t".to_string() + self.free_swap.to_string().as_str() + end;
+        let shmem = "Shmem:\t".to_string() + self.shmem.to_string().as_str() + end;
+        let slab = "Slab:\t".to_string() + self.slab.to_string().as_str() + end;
+
+        let writer = &mut buffer.get_writer();
+        dont_check!(writeln!(writer, "{}", total_mem));
+        dont_check!(writeln!(writer, "{}", free_mem));
+        dont_check!(writeln!(writer, "{}", avail_mem));
+        dont_check!(writeln!(writer, "{}", buffers));
+        dont_check!(writeln!(writer, "{}", cached));
+        dont_check!(writeln!(writer, "{}", cached_swap));
+        dont_check!(writeln!(writer, "{}", total_swap));
+        dont_check!(writeln!(writer, "{}", free_swap));
+        dont_check!(writeln!(writer, "{}", shmem));
+        dont_check!(writeln!(writer, "{}", slab));
+
+        Ok(buffer.data().len())
+    }
+}
+
+#[allow(dead_code)]
+pub trait ProcFsFile: Send + Sync {
+    fn can_read(&self) -> bool {
+        false
+    }
+
+    fn can_write(&self) -> bool {
+        false
+    }
+
+    fn read(&self, _buffer: &mut PageBuffer) -> KResult<usize> {
+        Err(EACCES)
+    }
+
+    fn write(&self, _buffer: &[u8]) -> KResult<usize> {
+        Err(EACCES)
+    }
+}
+
+pub enum ProcFsNode {
+    File(Arc<FileInode>),
+    Dir(Arc<DirInode>),
+}
+
+impl ProcFsNode {
+    fn unwrap(&self) -> Arc<dyn Inode> {
+        match self {
+            ProcFsNode::File(inode) => inode.clone(),
+            ProcFsNode::Dir(inode) => inode.clone(),
+        }
+    }
+
+    fn ino(&self) -> Ino {
+        match self {
+            ProcFsNode::File(inode) => inode.ino,
+            ProcFsNode::Dir(inode) => inode.ino,
+        }
+    }
+}
+
+define_struct_inode! {
+    pub struct FileInode {
+        file: Box<dyn ProcFsFile>,
+    }
+}
+
+impl FileInode {
+    pub fn new(ino: Ino, vfs: Weak<ProcFs>, file: Box<dyn ProcFsFile>) -> Arc<Self> {
+        let mut mode = Mode::REG;
+        if file.can_read() {
+            mode.set_perm(0o444);
+        }
+        if file.can_write() {
+            mode.set_perm(0o222);
+        }
+
+        let mut inode = Self {
+            idata: InodeData::new(ino, vfs),
+            file,
+        };
+
+        inode.idata.mode.store(mode);
+        inode.idata.nlink.store(1, Ordering::Relaxed);
+        *inode.ctime.get_mut() = Instant::now();
+        *inode.mtime.get_mut() = Instant::now();
+        *inode.atime.get_mut() = Instant::now();
+
+        Arc::new(inode)
+    }
+}
+
+impl Inode for FileInode {
+    fn read(&self, buffer: &mut dyn Buffer, offset: usize) -> KResult<usize> {
+        if !self.file.can_read() {
+            return Err(EACCES);
+        }
+
+        let mut page_buffer = PageBuffer::new();
+        self.file.read(&mut page_buffer)?;
+
+        let data = page_buffer
+            .data()
+            .split_at_checked(offset)
+            .map(|(_, data)| data);
+
+        match data {
+            None => Ok(0),
+            Some(data) => Ok(buffer.fill(data)?.allow_partial()),
+        }
+    }
+}
+
+define_struct_inode! {
+    pub struct DirInode {
+        entries: Locked<Vec<(Arc<[u8]>, ProcFsNode)>, ()>,
+    }
+}
+
+impl DirInode {
+    pub fn new(ino: Ino, vfs: Weak<ProcFs>) -> Arc<Self> {
+        Self::new_locked(ino, vfs, |inode, rwsem| unsafe {
+            addr_of_mut_field!(inode, entries).write(Locked::new(vec![], rwsem));
+            addr_of_mut_field!(&mut *inode, mode).write(AtomicMode::from(Mode::DIR.perm(0o755)));
+            addr_of_mut_field!(&mut *inode, nlink).write(1.into());
+            addr_of_mut_field!(&mut *inode, ctime).write(Spin::new(Instant::now()));
+            addr_of_mut_field!(&mut *inode, mtime).write(Spin::new(Instant::now()));
+            addr_of_mut_field!(&mut *inode, atime).write(Spin::new(Instant::now()));
+        })
+    }
+}
+
+impl Inode for DirInode {
+    fn lookup(&self, dentry: &Arc<Dentry>) -> KResult<Option<Arc<dyn Inode>>> {
+        let lock = block_on(self.rwsem.read());
+        Ok(self
+            .entries
+            .access(lock.prove())
+            .iter()
+            .find_map(|(name, node)| (name == &***dentry.name()).then(|| node.unwrap())))
+    }
+
+    fn do_readdir(
+        &self,
+        offset: usize,
+        callback: &mut dyn FnMut(&[u8], Ino) -> KResult<ControlFlow<(), ()>>,
+    ) -> KResult<usize> {
+        let lock = block_on(self.rwsem.read());
+        self.entries
+            .access(lock.prove())
+            .iter()
+            .skip(offset)
+            .map(|(name, node)| callback(name.as_ref(), node.ino()))
+            .take_while(|result| result.map_or(true, |flow| flow.is_continue()))
+            .take_while_inclusive(|result| result.is_ok())
+            .fold_ok(0, |acc, _| acc + 1)
+    }
+}
+
+impl_any!(ProcFs);
+pub struct ProcFs {
+    root_node: Arc<DirInode>,
+    next_ino: AtomicIno,
+}
+
+impl Vfs for ProcFs {
+    fn io_blksize(&self) -> usize {
+        4096
+    }
+
+    fn fs_devid(&self) -> DevId {
+        10
+    }
+
+    fn is_read_only(&self) -> bool {
+        false
+    }
+}
+
+static GLOBAL_PROCFS: LazyLock<Arc<ProcFs>> = LazyLock::new(|| {
+    Arc::new_cyclic(|weak: &Weak<ProcFs>| ProcFs {
+        root_node: DirInode::new(0, weak.clone()),
+        next_ino: AtomicIno::new(1),
+    })
+});
+
+struct ProcFsMountCreator;
+
+#[allow(dead_code)]
+impl ProcFsMountCreator {
+    pub fn get() -> Arc<ProcFs> {
+        GLOBAL_PROCFS.clone()
+    }
+
+    pub fn get_weak() -> Weak<ProcFs> {
+        Arc::downgrade(&GLOBAL_PROCFS)
+    }
+}
+
+impl MountCreator for ProcFsMountCreator {
+    fn create_mount(&self, _source: &str, _flags: u64, mp: &Arc<Dentry>) -> KResult<Mount> {
+        let vfs = ProcFsMountCreator::get();
+        let root_inode = vfs.root_node.clone();
+        Mount::new(mp, vfs, root_inode)
+    }
+
+    fn check_signature(&self, _: &[u8]) -> KResult<bool> {
+        Ok(true)
+    }
+}
+
+pub fn root() -> ProcFsNode {
+    let vfs = ProcFsMountCreator::get();
+    let root = vfs.root_node.clone();
+
+    ProcFsNode::Dir(root)
+}
+
+pub fn creat(
+    parent: &ProcFsNode,
+    name: Arc<[u8]>,
+    file: Box<dyn ProcFsFile>,
+) -> KResult<ProcFsNode> {
+    let parent = match parent {
+        ProcFsNode::File(_) => return Err(ENOTDIR),
+        ProcFsNode::Dir(parent) => parent,
+    };
+
+    let fs = ProcFsMountCreator::get();
+    let ino = fs.next_ino.fetch_add(1, Ordering::Relaxed);
+
+    let inode = FileInode::new(ino, Arc::downgrade(&fs), file);
+
+    {
+        let lock = block_on(parent.idata.rwsem.write());
+        parent
+            .entries
+            .access_mut(lock.prove_mut())
+            .push((name, ProcFsNode::File(inode.clone())));
+    }
+
+    Ok(ProcFsNode::File(inode))
+}
+
+#[allow(dead_code)]
+pub fn mkdir(parent: &ProcFsNode, name: &[u8]) -> KResult<ProcFsNode> {
+    let parent = match parent {
+        ProcFsNode::File(_) => return Err(ENOTDIR),
+        ProcFsNode::Dir(parent) => parent,
+    };
+
+    let fs = ProcFsMountCreator::get();
+    let ino = fs.next_ino.fetch_add(1, Ordering::Relaxed);
+
+    let inode = DirInode::new(ino, Arc::downgrade(&fs));
+
+    parent
+        .entries
+        .access_mut(block_on(inode.rwsem.write()).prove_mut())
+        .push((Arc::from(name), ProcFsNode::Dir(inode.clone())));
+
+    Ok(ProcFsNode::Dir(inode))
+}
+
+struct DumpMountsFile;
+impl ProcFsFile for DumpMountsFile {
+    fn can_read(&self) -> bool {
+        true
+    }
+
+    fn read(&self, buffer: &mut PageBuffer) -> KResult<usize> {
+        dump_mounts(&mut buffer.get_writer());
+
+        Ok(buffer.data().len())
+    }
+}
+
+pub fn init() {
+    register_filesystem("procfs", Arc::new(ProcFsMountCreator)).unwrap();
+
+    creat(
+        &root(),
+        Arc::from(b"mounts".as_slice()),
+        Box::new(DumpMountsFile),
+    )
+    .unwrap();
+
+    creat(
+        &root(),
+        Arc::from(b"meminfo".as_slice()),
+        Box::new(DumpMemInfoFile::new()),
+    )
+    .unwrap();
+}
+
+pub struct GenericProcFsFile<ReadFn>
+where
+    ReadFn: Send + Sync + Fn(&mut PageBuffer) -> KResult<()>,
+{
+    read_fn: Option<ReadFn>,
+}
+
+impl<ReadFn> ProcFsFile for GenericProcFsFile<ReadFn>
+where
+    ReadFn: Send + Sync + Fn(&mut PageBuffer) -> KResult<()>,
+{
+    fn can_read(&self) -> bool {
+        self.read_fn.is_some()
+    }
+
+    fn read(&self, buffer: &mut PageBuffer) -> KResult<usize> {
+        self.read_fn.as_ref().ok_or(EACCES)?(buffer).map(|_| buffer.data().len())
+    }
+}
+
+pub fn populate_root<F>(name: Arc<[u8]>, read_fn: F) -> KResult<()>
+where
+    F: Send + Sync + Fn(&mut PageBuffer) -> KResult<()> + 'static,
+{
+    let root = root();
+
+    creat(
+        &root,
+        name,
+        Box::new(GenericProcFsFile {
+            read_fn: Some(read_fn),
+        }),
+    )
+    .map(|_| ())
+}

@@ -1,0 +1,12 @@
+[workspace]
+members = ["eonix_spin", "eonix_sync_rt", "eonix_sync_base"]
+
+[package]
+name = "eonix_sync"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eonix_spin = { path = "./eonix_spin" }
+eonix_sync_base = { path = "./eonix_sync_base" }
+eonix_sync_rt = { path = "./eonix_sync_rt" }

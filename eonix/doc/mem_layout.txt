@@ -1,0 +1,27 @@
+physical memory
+
+0x0000   - 0x1000   : Some early kernel data
+0x1000   - 0x2000   : kernel space PML4
+0x2000   - 0x3000   : kernel PDPT for physical memory mappings
+0x3000   - 0x4000   : kernel PDPT for kernel space
+0x4000   - 0x5000   : kernel PD for kernel image
+0x5000   - 0x6000   : kernel PT for kernel image
+0x6000   - 0x7000   : kernel stage1
+
+0x7000   - 0x80000  : unused
+
+0x100000 - 0x200000 : unused
+0x200000 - ?        : kernel image
+
+virtual address space
+
+0xffff ff0 000 000 000 - 0xffff ff7 fff fff fff  512GB physical memory
+0xffff ff8 000 000 000 - 0xffff ff8 03f fff fff    1GB unused
+0xffff ff8 040 000 000 - 0xffff ff8 13f fff fff    4GB struct page array
+0xffff ff8 140 000 000 - 0xffff fff fbf fff fff    506GB unused
+
+0xffff fff fc0 000 000 - 0xffff fff fc0 1ff fff    2MB unused
+0xffff fff fc0 200 000 - 0xffff fff fff 9ff fff 1016MB kernel bss
+0xffff fff fff a00 000 - 0xffff fff fff bff fff    2MB unused
+0xffff fff fff c00 000 - 0xffff fff fff dff fff    2MB kernel image
+0xffff fff fff e00 000 - 0xffff fff fff fff fff    2MB unused

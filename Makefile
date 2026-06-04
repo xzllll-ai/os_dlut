@@ -10,6 +10,8 @@ KERNEL_BIN := $(BUILD)/kernel.bin
 EXT_ELF := $(BUILD)/user/hello_ext.elf
 EXT_BLOB := $(BUILD)/user/hello_ext_blob.o
 OFFICIAL_IMG ?= alpine-linux-riscv64-ext4fs.img
+EONIX_DIR ?= eonix
+EONIX_MAKEFILE := $(EONIX_DIR)/Makefile.real
 
 CFLAGS := -std=gnu11 -Wall -Wextra -Werror -O2 -g
 CFLAGS += -ffreestanding -fno-common -fno-stack-protector -fno-pic -no-pie
@@ -39,7 +41,7 @@ SRCS := \
 
 OBJS := $(patsubst %.S,$(BUILD)/%.o,$(patsubst %.c,$(BUILD)/%.o,$(SRCS))) $(EXT_BLOB)
 
-.PHONY: all run run-with-official-img debug clean disasm mkfs img-info
+.PHONY: all run run-with-official-img debug clean disasm mkfs img-info eonix-check eonix-configure eonix-build eonix-run
 
 all: $(KERNEL_ELF) $(KERNEL_BIN)
 
@@ -86,6 +88,25 @@ img-info:
 	file $(OFFICIAL_IMG)
 	qemu-img info $(OFFICIAL_IMG)
 	@command -v debugfs >/dev/null && debugfs -R 'ls -l /' $(OFFICIAL_IMG) || true
+
+eonix-check:
+	@command -v rustup >/dev/null || (echo "missing rustup"; exit 1)
+	@command -v cargo >/dev/null || (echo "missing cargo"; exit 1)
+	@command -v rustc >/dev/null || (echo "missing rustc"; exit 1)
+	@command -v mkfs.fat >/dev/null || (echo "missing mkfs.fat from dosfstools"; exit 1)
+	@command -v qemu-system-riscv64 >/dev/null || (echo "missing qemu-system-riscv64"; exit 1)
+	@cargo objcopy --version >/dev/null 2>&1 || (echo "missing cargo-binutils or llvm-tools-preview"; exit 1)
+	@test -d $(EONIX_DIR) || (echo "missing $(EONIX_DIR)"; exit 1)
+	@test -f $(OFFICIAL_IMG) || (echo "missing $(OFFICIAL_IMG)"; exit 1)
+
+eonix-configure:
+	cd $(EONIX_DIR) && OUT=Makefile.real ARCH=riscv64 ./configure
+
+eonix-build: eonix-check eonix-configure
+	$(MAKE) -C $(EONIX_DIR) -f Makefile.real build ARCH=riscv64 MODE=release
+
+eonix-run: eonix-build
+	$(MAKE) -C $(EONIX_DIR) -f Makefile.real test-run ARCH=riscv64 MODE=release IMG=$(abspath $(OFFICIAL_IMG)) QEMU=qemu-system-riscv64 QEMU_ACCEL="-accel tcg"
 
 clean:
 	rm -rf $(BUILD) rootfs.img

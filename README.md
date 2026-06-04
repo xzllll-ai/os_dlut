@@ -46,6 +46,19 @@ This only attaches the disk. Reading files from it still requires implementing a
 block driver and an ext4 reader, or booting a separate Linux kernel with this
 rootfs.
 
+The bundled `eonix` reference system already has a Linux-like
+syscall layer, virtio block, ext4, terminal, and networking support. After
+installing `rustup`, `cargo`, `rustc`, `dosfstools` (`mkfs.fat`), and QEMU, it
+can be built and run against the Alpine image with:
+
+```sh
+make eonix-check
+make eonix-run
+```
+
+Inside that shell, test the course commands such as `git -h`, `vim -h`,
+`gcc --help`, `rustc -h`, `git init`, `git commit`, and `git clone`.
+
 ## Implemented Features
 
 - Boot: M-mode entry, stack setup, trap vector setup, M-to-S transition.
