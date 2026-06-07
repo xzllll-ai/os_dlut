@@ -1,0 +1,146 @@
+HOST ?= $(shell uname -s | tr '[:upper:]' '[:lower:]')
+ARCH ?= ##DEFAULT_ARCH##
+MODE ?= debug
+SMP ?= 4
+
+QEMU ?= ##QEMU##
+GDB ?= ##GDB##
+FDISK ?= ##FDISK##
+
+IMG ?= ##IMAGE##
+
+COMMA := ,
+
+PROFILE = $(MODE)
+ifeq ($(MODE),debug)
+PROFILE := dev
+endif
+
+USER_PROGRAMS = $(shell find user-programs -type f)
+KERNEL_SOURCES := $(shell find src macros crates -name '*.rs' -type f)
+KERNEL_CARGO_MANIFESTS += $(shell find src macros crates -name Cargo.toml -type f)
+KERNEL_DEPS := $(KERNEL_SOURCES) $(KERNEL_CARGO_MANIFESTS)
+
+QEMU_ARGS ?= -no-reboot
+CARGO_FLAGS := --profile $(PROFILE)
+
+ifneq ($(SMP),)
+CARGO_FLAGS += --features smp
+endif
+
+ifneq ($(FEATURES),)
+CARGO_FLAGS += --features $(FEATURES)
+endif
+
+ifeq ($(HOST),darwin)
+QEMU_ACCEL ?= -accel tcg
+else ifeq ($(HOST),linux)
+
+ifeq ($(shell ls /dev/kvm),/dev/kvm)
+QEMU_ACCEL ?= -accel kvm
+endif
+
+endif
+
+QEMU_ARGS += $(QEMU_ACCEL)
+
+ifneq ($(DEBUG_TRAPS),)
+QEMU_ARGS += -d cpu_reset,int,guest_errors -D build/qemu.log
+endif
+
+ifneq ($(SMP),)
+QEMU_ARGS += -smp $(SMP)
+endif
+
+ifeq ($(ARCH),riscv64)
+
+BINARY_DIR_BASE := build/riscv64gc-unknown-none-elf
+BINARY_DIR := $(BINARY_DIR_BASE)/$(MODE)
+
+QEMU_ARGS += \
+	-machine virt -m 1G -kernel $(BINARY_DIR)/dlutos_kernel \
+	-device virtio-blk-device,drive=disk0,bus=virtio-mmio-bus.0 \
+	-device virtio-net-device,netdev=mynet0 \
+	-drive id=disk0,file=build/boot-riscv64.img,format=raw,if=none \
+	-netdev user,id=mynet0 \
+	-rtc base=utc
+
+ifneq ($(IMG),)
+QEMU_ARGS += \
+	-drive id=disk1,file=$(IMG),format=raw,if=none \
+	-device virtio-blk-device,drive=disk1,bus=virtio-mmio-bus.1
+endif
+
+CARGO_FLAGS += --target riscv64gc-unknown-none-elf
+
+.PHONY: build
+build: $(BINARY_DIR)/dlutos_kernel build/boot-riscv64.img
+
+endif
+
+.PHONY: run
+run: build build/kernel.sym
+	$(QEMU) $(QEMU_ARGS) -display none -serial mon:stdio
+
+.PHONY: srun
+srun: build build/kernel.sym
+	$(QEMU) $(QEMU_ARGS) -display none -S -s -serial mon:stdio
+
+.PHONY: test-run
+test-run: build
+	$(QEMU) $(QEMU_ARGS) -nographic
+
+.PHONY: clean
+clean:
+	-rm -rf build
+	-mkdir build
+
+.PHONY: clean-all
+clean-all: clean
+	-rm Makefile
+
+.PHONY: debug
+debug: build/kernel.sym
+	-RUST_GDB=$(GDB) rust-gdb --symbols=build/kernel.sym \
+		-iex 'set pagination off' \
+		-iex 'set output-radix 16' \
+		-iex 'set print asm-demangle on' \
+		-iex 'set print pretty on' \
+		-iex 'target remote:1234'
+	-killall $(QEMU)
+
+.PHONY: tmux-debug
+tmux-debug:
+	tmux new-session -s gbos-debug -d
+	-tmux split-window -t gbos-debug -hf
+	-tmux send-keys -t gbos-debug:1.1 'make srun' C-m
+	-tmux send-keys -t gbos-debug:1.2 'make debug' C-m C-m
+	-tmux attach -t gbos-debug
+	tmux kill-session -t gbos-debug
+
+$(BINARY_DIR)/dlutos_kernel: $(KERNEL_DEPS)
+	CARGO_TARGET_DIR=build cargo build $(CARGO_FLAGS)
+
+build/kernel.sym: $(BINARY_DIR)/dlutos_kernel
+	CARGO_TARGET_DIR=build cargo objcopy -q $(CARGO_FLAGS) -- --only-keep-debug build/kernel.sym
+
+build/fs-%.img: user-programs/init_script_%.sh script/build-img.sh script/build-fat32-img.py $(USER_PROGRAMS)
+	ARCH=$* OUTPUT=$@ sh script/build-img.sh
+
+build/mbr.bin: $(BINARY_DIR)/dlutos_kernel
+	CARGO_TARGET_DIR=build cargo objcopy -q $(CARGO_FLAGS) -- -O binary -j .mbr build/mbr.bin
+
+build/stage1.bin: $(BINARY_DIR)/dlutos_kernel
+	CARGO_TARGET_DIR=build cargo objcopy -q $(CARGO_FLAGS) -- -O binary -j .stage1 build/stage1.bin
+
+build/kernel.bin: $(BINARY_DIR)/dlutos_kernel
+	CARGO_TARGET_DIR=build cargo objcopy -q $(CARGO_FLAGS) -- -O binary --strip-debug \
+		-R .mbr -R .stage1 build/kernel.bin
+
+build/boot-riscv64.img: build/fs-riscv64.img
+	dd if=$< of=$@ bs=$(shell expr 4 \* 1024 \* 1024) \
+		seek=1 conv=notrunc 2> /dev/null
+	sh -c 'echo n; echo; echo; echo 8192; echo; echo a; echo w' \
+		| $(FDISK) $@ 2> /dev/null > /dev/null
+
+.DEFAULT_GOAL := build

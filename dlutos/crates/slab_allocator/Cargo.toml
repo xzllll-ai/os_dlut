@@ -1,0 +1,10 @@
+[package]
+name = "slab_allocator"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+dlutos_mm = { path = "../dlutos_mm" }
+dlutos_sync = { path = "../dlutos_sync" }
+intrusive_list = { path = "../intrusive_list" }
+

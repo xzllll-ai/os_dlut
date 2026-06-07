@@ -1,0 +1,12 @@
+[workspace]
+members = ["dlutos_spin", "dlutos_sync_rt", "dlutos_sync_base"]
+
+[package]
+name = "dlutos_sync"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+dlutos_spin = { path = "./dlutos_spin" }
+dlutos_sync_base = { path = "./dlutos_sync_base" }
+dlutos_sync_rt = { path = "./dlutos_sync_rt" }

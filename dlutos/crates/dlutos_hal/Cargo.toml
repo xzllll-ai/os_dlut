@@ -1,0 +1,28 @@
+[package]
+name = "dlutos_hal"
+version = "0.1.0"
+edition = "2024"
+links = "dlutos_hal"
+
+[dependencies]
+dlutos_hal_traits = { path = "./dlutos_hal_traits" }
+dlutos_hal_macros = { path = "./dlutos_hal_macros" }
+
+dlutos_mm = { path = "../dlutos_mm" }
+dlutos_sync_base = { path = "../dlutos_sync/dlutos_sync_base" }
+dlutos_percpu = { path = "../dlutos_percpu" }
+dlutos_preempt = { path = "../dlutos_preempt" }
+
+acpi = "5.2.0"
+cfg-if = "1.0"
+
+[target.'cfg(target_arch = "riscv64")'.dependencies]
+intrusive_list = { path = "../intrusive_list" }
+buddy_allocator = { path = "../buddy_allocator" }
+sbi = "0.3.0"
+riscv = { version = "0.13.0", features = ["s-mode"] }
+fdt = "0.1"
+bitflags = "2.6.0"
+
+[features]
+platform-riscv64-qemu-virt = []

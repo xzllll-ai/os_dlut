@@ -1,0 +1,8 @@
+[package]
+name = "dlutos_hal_traits"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+dlutos_mm = { path = "../../dlutos_mm" }
+bitflags = "2.6.0"

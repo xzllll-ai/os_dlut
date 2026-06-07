@@ -1,0 +1,7 @@
+[package]
+name = "dlutos_percpu"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+dlutos_percpu_macros = { path = "./dlutos_percpu_macros" }

@@ -1,0 +1,124 @@
+#!/bin/sh
+DEFAULT_ARCH="riscv64"
+
+if [ "$OUT" = "" ]; then
+    OUT="Makefile"
+fi
+
+printf "Configuring for %s...\n" "$OUT"
+
+event() {
+    printf "$1... "
+}
+
+ARCH=${ARCH:-riscv64}
+
+# Define toolchain and QEMU/GDB settings for per architecture
+event "target architecture"
+echo "$ARCH"
+case "$ARCH" in
+    riscv64)
+        QEMU_EXECUTABLES="qemu-system-riscv64"
+        GDB_EXECUTABLES="gdb riscv64-unknown-elf-gdb"
+        : "${CROSS_COMPILE:=riscv64-unknown-elf-}"
+        ;;
+    *)
+        echo "Unsupported ARCH: $ARCH"
+        exit 1
+        ;;
+esac
+
+if [ "$QEMU" = "" ]; then
+    event "checking default qemu"
+    QEMU="qemu-system-$DEFAULT_ARCH"
+    if $QEMU --version > /dev/null 2>&1; then
+        QEMU="qemu-system-\$(ARCH)"
+        break
+    fi
+else
+    event "checking given qemu"
+    for item in $QEMU; do
+        if $item --version > /dev/null 2>&1; then
+            QEMU="$item"
+            break
+        fi
+    done
+    QEMU=""
+fi
+if [ "$QEMU" = "" ]; then
+    echo "failed"
+    exit 1
+fi
+echo "$QEMU"
+
+check_gdb_arch() {
+    local item="$1"
+    if $item --init-eval-command 'set arch' \
+             --init-eval-command 'q' 2>&1 \
+             | grep "$DEFAULT_ARCH" >/dev/null 2>&1; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+if [ "$GDB" = "" ]; then
+    event "checking default gdb"
+    if check_gdb_arch "$DEFAULT_ARCH-elf-gdb"; then
+        GDB="\$(ARCH)-elf-gdb"
+        break
+    fi
+else
+    event 'checking given gdb'
+    for item in $GDB; do
+        if check_gdb_arch "$GDB"; then
+            GDB="$item"
+            break
+        fi
+    done
+    GDB=""
+fi
+if [ "$GDB" = "" ]; then
+    echo "failed"
+    exit 1
+fi
+echo "$GDB"
+
+event "checking util-linux fdisk"
+if [ "$FDISK" = "" ]; then
+    if ! which fdisk > /dev/null 2>&1; then
+        echo "no"
+        exit 1
+    fi
+    FDISK=`which fdisk`
+fi
+
+if ! $FDISK -v 2>&1 | grep util-linux > /dev/null 2>&1 ; then
+    echo "no, fdisk is not from util-linux"
+    exit 1
+else
+    echo "$FDISK"
+fi
+
+event "checking mkfs tool"
+if ! which mkfs.fat > /dev/null 2>&1; then
+    echo "no"
+    exit 1
+else
+    echo `which mkfs.fat`
+fi
+
+event "checking additional image"
+if [ "$IMG" = "" ]; then
+    echo "no"
+else
+    echo "$IMG"
+fi
+
+cp Makefile.src "$OUT"
+sed -i '' -e "s|##DEFAULT_ARCH##|$DEFAULT_ARCH|" "$OUT" > /dev/null 2>&1
+sed -i '' -e "s|##GDB##|$GDB|" "$OUT" > /dev/null 2>&1
+sed -i '' -e "s|##QEMU##|$QEMU|" "$OUT" > /dev/null 2>&1
+sed -i '' -e "s|##FDISK##|$FDISK|" "$OUT" > /dev/null 2>&1
+sed -i '' -e "s|##IMAGE##|$IMG|" "$OUT" > /dev/null 2>&1
+exit 0

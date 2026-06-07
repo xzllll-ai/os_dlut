@@ -1,0 +1,12 @@
+[package]
+name = "dlutos_sync_rt"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+dlutos_hal = { path = "../../dlutos_hal" }
+dlutos_preempt = { path = "../../dlutos_preempt" }
+dlutos_spin = { path = "../dlutos_spin" }
+dlutos_sync_base = { path = "../dlutos_sync_base" }
+
+intrusive-collections = "0.9.7"

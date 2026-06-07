@@ -1,0 +1,20 @@
+[package]
+name = "dlutos_runtime"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+atomic_unique_refcell = { path = "../atomic_unique_refcell" }
+dlutos_hal = { path = "../dlutos_hal" }
+dlutos_log = { path = "../dlutos_log" }
+dlutos_percpu = { path = "../dlutos_percpu" }
+dlutos_preempt = { path = "../dlutos_preempt" }
+dlutos_sync = { path = "../dlutos_sync" }
+pointers = { path = "../pointers" }
+
+intrusive-collections = "0.9.7"
+
+[features]
+default = []
+trace_scheduler = []
+log_trace = ["trace_scheduler"]

@@ -1,0 +1,8 @@
+[package]
+name = "dlutos_spin"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+dlutos_preempt = { path = "../../dlutos_preempt" }
+dlutos_sync_base = { path = "../dlutos_sync_base" }
