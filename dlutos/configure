@@ -116,9 +116,15 @@ else
 fi
 
 cp Makefile.src "$OUT"
-sed -i '' -e "s|##DEFAULT_ARCH##|$DEFAULT_ARCH|" "$OUT" > /dev/null 2>&1
-sed -i '' -e "s|##GDB##|$GDB|" "$OUT" > /dev/null 2>&1
-sed -i '' -e "s|##QEMU##|$QEMU|" "$OUT" > /dev/null 2>&1
-sed -i '' -e "s|##FDISK##|$FDISK|" "$OUT" > /dev/null 2>&1
-sed -i '' -e "s|##IMAGE##|$IMG|" "$OUT" > /dev/null 2>&1
+if sed --version > /dev/null 2>&1; then
+    SED_INPLACE="sed -i"
+else
+    SED_INPLACE="sed -i ''"
+fi
+
+$SED_INPLACE -e "s|##DEFAULT_ARCH##|$DEFAULT_ARCH|" "$OUT" > /dev/null 2>&1
+$SED_INPLACE -e "s|##GDB##|$GDB|" "$OUT" > /dev/null 2>&1
+$SED_INPLACE -e "s|##QEMU##|$QEMU|" "$OUT" > /dev/null 2>&1
+$SED_INPLACE -e "s|##FDISK##|$FDISK|" "$OUT" > /dev/null 2>&1
+$SED_INPLACE -e "s|##IMAGE##|$IMG|" "$OUT" > /dev/null 2>&1
 exit 0

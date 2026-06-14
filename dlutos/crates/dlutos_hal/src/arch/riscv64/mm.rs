@@ -249,12 +249,16 @@ impl PhysAccess for ArchPhysAccess {
         let addr = ptr.addr().get();
 
         assert!(addr % align_of::<T>() == 0, "Alignment error");
-        assert!(
-            addr >= Self::PHYS_OFFSET,
-            "Address is not a valid physical address"
-        );
+        if addr >= KIMAGE_OFFSET {
+            PAddr::from_val(addr - KIMAGE_OFFSET)
+        } else {
+            assert!(
+                addr >= Self::PHYS_OFFSET,
+                "Address is not a valid physical address"
+            );
 
-        PAddr::from_val(addr - Self::PHYS_OFFSET)
+            PAddr::from_val(addr - Self::PHYS_OFFSET)
+        }
     }
 }
 

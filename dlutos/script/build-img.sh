@@ -21,6 +21,14 @@ if [ "$ARCH" = "riscv64" ] && [ "$DLUTOS_USE_SUDO_IMG" != "1" ]; then
     python3 script/build-fat32-img.py "$OUTPUT" \
         ./user-programs/busybox.static:busybox \
         ./user-programs/init_script_riscv64.sh:initsh \
+        ./user-programs/git_test.sh:git_test.sh \
+        ./user-programs/vim:vim \
+        ./user-programs/vim_test.sh:vim_test.sh \
+        ./user-programs/gcc:gcc \
+        ./user-programs/gcc_test.sh:gcc_test.sh \
+        ./user-programs/aout.tpl:aout.tpl \
+        ./user-programs/rustc:rustc \
+        ./user-programs/rst_test.sh:rst_test.sh \
         build/tinyshell.riscv64:tshell
     exit
 fi
@@ -43,6 +51,14 @@ if [ "$ARCH" = "riscv64" ]; then
         ./user-programs/tinyshell.c
     $SUDO cp ./user-programs/busybox.static build/mnt/busybox
     $SUDO cp ./user-programs/init_script_riscv64.sh build/mnt/initsh
+    $SUDO cp ./user-programs/git_test.sh build/mnt/git_test.sh
+    $SUDO cp ./user-programs/vim build/mnt/vim
+    $SUDO cp ./user-programs/vim_test.sh build/mnt/vim_test.sh
+    $SUDO cp ./user-programs/gcc build/mnt/gcc
+    $SUDO cp ./user-programs/gcc_test.sh build/mnt/gcc_test.sh
+    $SUDO cp ./user-programs/aout.tpl build/mnt/aout.tpl
+    $SUDO cp ./user-programs/rustc build/mnt/rustc
+    $SUDO cp ./user-programs/rst_test.sh build/mnt/rst_test.sh
     $SUDO cp build/tinyshell.riscv64 build/mnt/tshell
 fi
 

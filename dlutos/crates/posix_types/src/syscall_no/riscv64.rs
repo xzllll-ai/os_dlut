@@ -243,6 +243,7 @@ pub const SYS_RT_TGSIGQUEUEINFO: usize = 240;
 pub const SYS_PERF_EVENT_OPEN: usize = 241;
 pub const SYS_ACCEPT4: usize = 242;
 pub const SYS_RECVMMSG_TIME32: usize = 243;
+pub const SYS_RISCV_HWPROBE: usize = 258;
 pub const SYS_WAIT4: usize = 260;
 pub const SYS_PRLIMIT64: usize = 261;
 pub const SYS_FANOTIFY_INIT: usize = 262;

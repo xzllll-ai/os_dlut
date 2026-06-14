@@ -85,7 +85,7 @@ impl smoltcp::phy::Device for dyn NetDev {
         &mut self,
         _timestamp: smoltcp::time::Instant,
     ) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        if self.can_receive() && self.can_send() {
+        if self.can_receive() {
             let rx_buffer = self.recv().unwrap();
             Some((RxToken(rx_buffer), TxToken(self)))
         } else {

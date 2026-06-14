@@ -67,38 +67,23 @@ cat > /etc/profile <<EOF
 export PATH=/bin
 EOF
 
-cat > /root/.profile <<EOF
-export HOME=/root
-export PATH="/bin:/usr/bin:\$PATH"
-
-alias ll="ls -l "
-alias la="ls -la "
-EOF
-
-cat > /root/test.c <<EOF
-#include <stdio.h>
-
-int main() {
-    int var = 0;
-    printf("Hello, world!\n");
-    printf("Please input a number: \n");
-    scanf("%d", &var);
-    if (var > 0) {
-        printf("You typed a positive number.\n");
-    } else if (var == 0 ) {
-        printf("You input a zero.\n");
-    } else {
-        printf("You typed a negative number.\n");
-    }
-    return 0;
-}
-EOF
-
 ln -s /mnt1/lib /lib
 ln -s /mnt1/usr /usr
 mkdir -p /etc/ssl
 ln -sf /mnt1/etc/ssl/cert.pem /etc/ssl/cert.pem
 ln -sf /mnt1/etc/ssl/certs /etc/ssl/certs
+
+# Make vim wrapper available
+chmod +x /mnt/vim /mnt/gcc 2>/dev/null || true
+
+# Create gcc wrapper (symlink shebang has issues on DLUTos)
+cat > /bin/gcc <<'GCCEOF'
+#!/bin/sh
+exec sh /mnt/gcc "$@"
+GCCEOF
+chmod +x /bin/gcc
+ln -sf /mnt/vim /bin/vim 2>/dev/null || true
+ln -sf /mnt/rustc /bin/rustc 2>/dev/null || true
 export PATH="/bin:/usr/bin:$PATH"
 export SSL_CERT_FILE=/mnt1/etc/ssl/certs/ca-certificates.crt
 export GIT_SSL_CAINFO=/mnt1/etc/ssl/certs/ca-certificates.crt
@@ -107,6 +92,56 @@ cat > /etc/resolv.conf <<EOF
 nameserver 10.0.2.3
 nameserver 8.8.8.8
 EOF
+
+# ---- Git 环境配置 (第一题) ----
+mkdir -p /root/.ssh
+cat > /root/.ssh/config <<'SSHEOF'
+Host github.com
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+Host gitlink.org.cn
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+Host gitee.com
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+SSHEOF
+
+cat > /root/.gitconfig <<'GITEOF'
+[user]
+	name = dlutos-tester
+	email = dlutos@test.dlut.edu.cn
+[http]
+	sslVerify = false
+	lowSpeedLimit = 1000
+	lowSpeedTime = 60
+[init]
+	defaultBranch = master
+GITEOF
+
+# 创建方便的别名
+cat > /root/.profile <<'PROFEOF'
+export HOME=/root
+export PATH="/bin:/usr/bin:$PATH"
+
+alias ll="ls -l "
+alias la="ls -la "
+alias git-test="sh /mnt/git_test.sh"
+alias git-test0="sh /mnt/git_test.sh task0"
+alias git-test1="sh /mnt/git_test.sh task1"
+alias git-test2="sh /mnt/git_test.sh task2"
+	alias vim-test="sh /mnt/vim_test.sh"
+	alias gcc-test="sh /mnt/gcc_test.sh"
+	alias rustc-test="sh /mnt/rst_test.sh"
+
+	echo ""
+	echo "  DLUTos 功能测试就绪!"
+	echo "  Git:  git-test    # 全部测试"
+	echo "  Vim:  vim-test    # 全部测试"
+	echo "  GCC:  gcc-test    # 全部测试"
+	echo "  Rustc: rustc-test  # 全部测试"
+	echo ""
+PROFEOF
 
 set +x
 export HOME=/root

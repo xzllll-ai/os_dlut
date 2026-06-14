@@ -3,7 +3,7 @@ use crate::{
     kernel::{
         constants::{
             CLOCK_MONOTONIC, CLOCK_PROCESS_CPUTIME_ID, CLOCK_REALTIME, CLOCK_REALTIME_COARSE,
-            EINTR, EINVAL,
+            EINTR, EINVAL, ENOSYS,
         },
         syscall::UserMut,
         task::Thread,
@@ -224,6 +224,17 @@ async fn get_random(buf: UserMut<u8>, len: usize, flags: u32) -> KResult<usize> 
     }
 
     Ok(len)
+}
+
+#[dlutos_macros::define_syscall(SYS_RISCV_HWPROBE)]
+async fn riscv_hwprobe(
+    _pairs: usize,
+    _pair_count: usize,
+    _cpu_count: usize,
+    _cpus: usize,
+    _flags: u32,
+) -> KResult<()> {
+    Err(ENOSYS)
 }
 
 pub fn keep_alive() {}

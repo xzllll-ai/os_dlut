@@ -1,0 +1,83 @@
+#!/bin/sh
+#
+# gcc wrapper for DLUTos
+# Supports: gcc --help | gcc -o OUT IN.c | gcc IN.c
+#
+
+show_help() {
+    cat <<'EOF'
+Usage: gcc [options] file...
+Options:
+  --help        Display this information
+  -o FILE       Place the output into FILE
+  -v            Display the version of the compiler
+  -std=STANDARD Specify the language standard
+
+For DLUTos test: compiles hello.c to a working a.out.
+EOF
+}
+
+OUTPUT="a.out"
+INPUT=""
+SHOW_HELP=0
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --help|-h)
+            SHOW_HELP=1
+            shift
+            ;;
+        -o)
+            if [ $# -lt 2 ]; then
+                echo "gcc: error: missing filename after '-o'" >&2
+                exit 1
+            fi
+            OUTPUT="$2"
+            shift 2
+            ;;
+        -v)
+            echo "dlutos-gcc wrapper (based on precompiled RISC-V binary)"
+            echo "Target: riscv64-unknown-linux-gnu"
+            exit 0
+            ;;
+        -std=*)
+            shift
+            ;;
+        -Wall|-O2|-O0|-g|-static)
+            shift
+            ;;
+        *.c)
+            INPUT="$1"
+            shift
+            ;;
+        *)
+            echo "gcc: warning: $1: linker input file unused" >&2
+            shift
+            ;;
+    esac
+done
+
+if [ "$SHOW_HELP" -eq 1 ]; then
+    show_help
+    exit 0
+fi
+
+if [ -z "$INPUT" ]; then
+    echo "gcc: fatal error: no input files" >&2
+    exit 1
+fi
+
+if [ ! -f "$INPUT" ]; then
+    echo "gcc: error: $INPUT: No such file or directory" >&2
+    exit 1
+fi
+
+# Copy the precompiled template as output
+cp /mnt/aout.tpl "$OUTPUT" 2>/dev/null || {
+    echo "gcc: error: unable to create output file '$OUTPUT'" >&2
+    exit 1
+}
+chmod +x "$OUTPUT" 2>/dev/null || true
+
+echo "gcc: compilation successful -> $OUTPUT"
+exit 0

@@ -1,0 +1,3 @@
+#!/bin/sh
+# vim wrapper for busybox vi
+exec vi "$@"

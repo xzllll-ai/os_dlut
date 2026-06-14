@@ -7,6 +7,8 @@ use dlutos_sync::Spin;
 
 static RTC: Spin<Option<Arc<dyn RealTimeClock>>> = Spin::new(None);
 
+const FALLBACK_UNIX_TIME_SECS: u64 = 1_781_049_600; // 2026-06-10 00:00:00 UTC
+
 pub trait RealTimeClock: Send + Sync {
     fn now(&self) -> Instant;
 }
@@ -15,7 +17,7 @@ impl Instant {
     pub fn now() -> Instant {
         RTC.lock().as_ref().map(|rtc| rtc.now()).unwrap_or_else(|| {
             let since_boot = Ticks::since_boot();
-            let pseudo_now = Duration::from_secs((55 * 365 + 30) * 24 * 3600) + since_boot;
+            let pseudo_now = Duration::from_secs(FALLBACK_UNIX_TIME_SECS) + since_boot;
 
             Instant::new(pseudo_now.as_secs(), pseudo_now.subsec_nanos())
         })

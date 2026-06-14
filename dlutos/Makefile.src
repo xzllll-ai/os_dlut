@@ -6,6 +6,10 @@ SMP ?= 4
 QEMU ?= ##QEMU##
 GDB ?= ##GDB##
 FDISK ?= ##FDISK##
+OPENSBI_FW ?= $(firstword $(wildcard \
+	/usr/lib/riscv64-linux-gnu/opensbi/generic/fw_jump.bin \
+	/usr/share/qemu/opensbi-riscv64-virt-fw_jump.bin))
+QEMU_BIOS ?= $(if $(OPENSBI_FW),$(OPENSBI_FW),default)
 
 IMG ?= ##IMAGE##
 
@@ -44,6 +48,10 @@ endif
 
 QEMU_ARGS += $(QEMU_ACCEL)
 
+ifneq ($(QEMU_BIOS),)
+QEMU_ARGS += -bios $(QEMU_BIOS)
+endif
+
 ifneq ($(DEBUG_TRAPS),)
 QEMU_ARGS += -d cpu_reset,int,guest_errors -D build/qemu.log
 endif
@@ -57,18 +65,16 @@ ifeq ($(ARCH),riscv64)
 BINARY_DIR_BASE := build/riscv64gc-unknown-none-elf
 BINARY_DIR := $(BINARY_DIR_BASE)/$(MODE)
 
-QEMU_ARGS += \
-	-machine virt -m 1G -kernel $(BINARY_DIR)/dlutos_kernel \
-	-device virtio-blk-device,drive=disk0,bus=virtio-mmio-bus.0 \
-	-device virtio-net-device,netdev=mynet0 \
-	-drive id=disk0,file=build/boot-riscv64.img,format=raw,if=none \
-	-netdev user,id=mynet0 \
-	-rtc base=utc
+QEMU_ARGS += -machine virt -m 1G -kernel $(BINARY_DIR)/dlutos_kernel
+QEMU_ARGS += -device virtio-blk-device,drive=disk0,bus=virtio-mmio-bus.0
+QEMU_ARGS += -device virtio-net-device,netdev=mynet0
+QEMU_ARGS += -drive id=disk0,file=build/boot-riscv64.img,format=raw,if=none
+QEMU_ARGS += -netdev user,id=mynet0
+QEMU_ARGS += -rtc base=utc
 
 ifneq ($(IMG),)
-QEMU_ARGS += \
-	-drive id=disk1,file=$(IMG),format=raw,if=none \
-	-device virtio-blk-device,drive=disk1,bus=virtio-mmio-bus.1
+QEMU_ARGS += -drive id=disk1,file=$(IMG),format=raw,if=none
+QEMU_ARGS += -device virtio-blk-device,drive=disk1,bus=virtio-mmio-bus.1
 endif
 
 CARGO_FLAGS += --target riscv64gc-unknown-none-elf
