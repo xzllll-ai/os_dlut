@@ -12,6 +12,7 @@ bx_enh_dbg.ini
 compile_commands.json
 
 cross-compile.cmake
+user-programs/git_env.local
 
 .DS_Store
 .Spotlight-V100

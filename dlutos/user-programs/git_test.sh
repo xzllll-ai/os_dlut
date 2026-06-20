@@ -12,6 +12,11 @@
 PASS=0
 FAIL=0
 TASK="${1:-all}"
+DEFAULT_GIT_REMOTE_URL="https://github.com/xzllll-ai/xv6-riscv-dlutos.git"
+
+if [ -f /mnt/git_env ]; then
+    . /mnt/git_env
+fi
 
 # ---------------------------------------------------------------------------
 # 辅助函数
@@ -63,6 +68,45 @@ cleanup_testdir() {
     rm -rf /tmp/git-test 2>/dev/null || true
     rm -rf /tmp/git-clone 2>/dev/null || true
     rm -rf /root/proj 2>/dev/null || true
+}
+
+first_match() {
+    local file
+    for file in "$@"; do
+        if [ -e "$file" ]; then
+            echo "$file"
+            return 0
+        fi
+    done
+    return 1
+}
+
+git_current_branch() {
+    local head
+
+    if [ -f .git/HEAD ]; then
+        IFS= read -r head < .git/HEAD || head=""
+        case "$head" in
+            "ref: refs/heads/"*)
+                echo "${head#ref: refs/heads/}"
+                return 0
+                ;;
+            "ref: "*)
+                echo "${head##*/}"
+                return 0
+                ;;
+        esac
+    fi
+
+    git rev-parse --abbrev-ref HEAD 2>/dev/null || true
+}
+
+run_git_redacted() {
+    local out rc
+    out=$("$@" 2>&1)
+    rc=$?
+    echo "$out"
+    return "$rc"
 }
 
 # ---------------------------------------------------------------------------
@@ -191,6 +235,7 @@ task2() {
     print_header "Task 2: remote git operations"
 
     check_cmd git || return 1
+    export GIT_TERMINAL_PROMPT=0
 
     # ---- git config ----
     echo ""
@@ -252,9 +297,9 @@ task2() {
     assert "clone .git exists" test -d "$CLONE_DIR/.git"
 
     local has_readme
-    has_readme=$(find "$CLONE_DIR" -maxdepth 1 -name "README*" 2>/dev/null | head -1)
+    has_readme=$(first_match "$CLONE_DIR"/README* 2>/dev/null || true)
     local has_license
-    has_license=$(find "$CLONE_DIR" -maxdepth 1 -name "LICENSE*" 2>/dev/null | head -1)
+    has_license=$(first_match "$CLONE_DIR"/LICENSE* 2>/dev/null || true)
     assert "clone contains README or LICENSE" \
         test -n "$has_readme" -o -n "$has_license"
 
@@ -266,7 +311,7 @@ task2() {
 
     # Detect current branch (handle shallow clone / detached HEAD)
     local CUR_BRANCH
-    CUR_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+    CUR_BRANCH=$(git_current_branch)
     if [ "$CUR_BRANCH" = "HEAD" ] || [ -z "$CUR_BRANCH" ]; then
         echo "  Detached HEAD, creating local branch 'master'"
         git checkout -b master 2>/dev/null || true
@@ -276,7 +321,7 @@ task2() {
 
     # Find README and modify it
     local README_FILE
-    README_FILE=$(find . -maxdepth 1 -name "README*" 2>/dev/null | head -1)
+    README_FILE=$(first_match ./README* 2>/dev/null || true)
     if [ -z "$README_FILE" ]; then
         README_FILE="./README.md"
         echo "# xv6-riscv clone" > "$README_FILE"
@@ -285,9 +330,12 @@ task2() {
     echo "" >> "$README_FILE"
     echo "<!-- DLUTos test update -->" >> "$README_FILE"
     echo "Tested on DLUTos kernel riscv64" >> "$README_FILE"
+    echo "DLUTos commit time: pending GitHub push time" >> "$README_FILE"
+    echo "DLUTos push test time: pending GitHub push time" >> "$README_FILE"
+    echo "  Commit marker prepared; push will write GitHub server time."
 
     assert "README modified" \
-        grep -q "DLUTos" "$README_FILE"
+        grep -q "DLUTos commit time" "$README_FILE"
 
     assert "git add modified file" \
         git add "$README_FILE"
@@ -295,14 +343,26 @@ task2() {
     assert "git commit modification" \
         git commit -m "update README - DLUTos test"
 
+    if [ -z "$GIT_REMOTE_URL" ]; then
+        GIT_REMOTE_URL="$DEFAULT_GIT_REMOTE_URL"
+        echo "  Using default push/pull remote: $GIT_REMOTE_URL"
+    fi
+
     # Push to remote
     if [ -n "$GIT_REMOTE_URL" ]; then
         echo "  Remote URL: $GIT_REMOTE_URL"
+        if [ -z "$GIT_USERNAME" ] || [ -z "$GIT_TOKEN" ]; then
+            echo "  [INPUT NEEDED] Set GitHub credentials before a real push:"
+            echo "  export GIT_USERNAME=YOUR_GITHUB_USERNAME"
+            echo "  export GIT_TOKEN=YOUR_GITHUB_TOKEN"
+        fi
 
         # Build auth URL if token is provided
         local PUSH_URL="$GIT_REMOTE_URL"
         if [ -n "$GIT_USERNAME" ] && [ -n "$GIT_TOKEN" ]; then
-            PUSH_URL=$(echo "$GIT_REMOTE_URL" | sed "s|https://|https://${GIT_USERNAME}:${GIT_TOKEN}@|")
+            case "$GIT_REMOTE_URL" in
+                https://*) PUSH_URL="https://${GIT_USERNAME}:${GIT_TOKEN}@${GIT_REMOTE_URL#https://}" ;;
+            esac
         fi
 
         git remote add me "$PUSH_URL" 2>/dev/null || \
@@ -312,7 +372,7 @@ task2() {
             sh -c "git remote -v 2>/dev/null | grep -q 'me'"
 
         echo "  Pushing branch '$CUR_BRANCH' to remote..."
-        if git push -u me "$CUR_BRANCH" 2>&1; then
+        if run_git_redacted git push -u me "$CUR_BRANCH"; then
             assert "git push succeeds" true
         else
             echo "  [WARN] Push failed (auth or remote not empty)"
@@ -331,11 +391,11 @@ task2() {
 
     if [ -n "$GIT_REMOTE_URL" ]; then
         echo "  Pulling from remote..."
-        if git pull me "$CUR_BRANCH" 2>&1; then
+        if run_git_redacted git pull me "$CUR_BRANCH"; then
             assert "git pull succeeds" true
         else
             echo "  [WARN] Pull failed, trying fetch to verify connectivity..."
-            if git fetch me 2>&1; then
+            if run_git_redacted git fetch me; then
                 assert "git fetch succeeds (network OK)" true
             else
                 echo "  [WARN] Network unreachable or auth required"

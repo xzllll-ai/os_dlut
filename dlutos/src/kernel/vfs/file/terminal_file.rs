@@ -2,7 +2,7 @@ use super::{File, FileType, PollEvent};
 use crate::{
     io::{Buffer, Stream, StreamRead},
     kernel::{
-        constants::{EINVAL, TCGETS, TCSETS, TIOCGPGRP, TIOCGWINSZ, TIOCSPGRP},
+        constants::{EINVAL, TCGETS, TCSETS, TCSETSF, TCSETSW, TIOCGPGRP, TIOCGWINSZ, TIOCSPGRP},
         terminal::TerminalIORequest,
         user::{UserPointer, UserPointerMut},
         Terminal,
@@ -44,7 +44,9 @@ impl TerminalFile {
         self.terminal
             .ioctl(match request as u32 {
                 TCGETS => TerminalIORequest::GetTermios(UserPointerMut::with_addr(arg3)?),
-                TCSETS => TerminalIORequest::SetTermios(UserPointer::with_addr(arg3)?),
+                TCSETS | TCSETSW | TCSETSF => {
+                    TerminalIORequest::SetTermios(UserPointer::with_addr(arg3)?)
+                }
                 TIOCGPGRP => TerminalIORequest::GetProcessGroup(UserPointerMut::with_addr(arg3)?),
                 TIOCSPGRP => TerminalIORequest::SetProcessGroup(UserPointer::with_addr(arg3)?),
                 TIOCGWINSZ => TerminalIORequest::GetWindowSize(UserPointerMut::with_addr(arg3)?),

@@ -4,6 +4,8 @@ pub const MAX_NAME_LENGTH: u32 = 255;
 
 pub const TCGETS: u32 = 0x5401;
 pub const TCSETS: u32 = 0x5402;
+pub const TCSETSW: u32 = 0x5403;
+pub const TCSETSF: u32 = 0x5404;
 pub const TIOCGPGRP: u32 = 0x540f;
 pub const TIOCSPGRP: u32 = 0x5410;
 pub const TIOCGWINSZ: u32 = 0x5413;

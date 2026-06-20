@@ -65,6 +65,7 @@ EOF
 
 cat > /etc/profile <<EOF
 export PATH=/bin
+export TERM=xterm
 EOF
 
 ln -s /mnt1/lib /lib
@@ -73,8 +74,21 @@ mkdir -p /etc/ssl
 ln -sf /mnt1/etc/ssl/cert.pem /etc/ssl/cert.pem
 ln -sf /mnt1/etc/ssl/certs /etc/ssl/certs
 
-# Make vim wrapper available
-chmod +x /mnt/vim /mnt/gcc 2>/dev/null || true
+# Make wrappers available
+chmod +x /mnt/git /mnt/vim /mnt/gcc /mnt/rustc /mnt/lswrap /mnt/curl 2>/dev/null || true
+chmod +x /mnt/all_test.sh /mnt/git_test.sh /mnt/vim_test.sh /mnt/gcc_test.sh /mnt/rst_test.sh 2>/dev/null || true
+
+# Disable BusyBox ls color escape sequences; the DLUTos serial console may show
+# raw ANSI color fragments such as "[1;34mtmp".
+rm -f /bin/ls
+cp /mnt/lswrap /bin/ls
+chmod +x /bin/ls
+
+# Create git wrapper (avoid Alpine git SIGBUS paths on DLUTos)
+cp /mnt/git /bin/git
+chmod +x /bin/git
+cp /mnt/curl /bin/curl
+chmod +x /bin/curl
 
 # Create gcc wrapper (symlink shebang has issues on DLUTos)
 cat > /bin/gcc <<'GCCEOF'
@@ -82,8 +96,10 @@ cat > /bin/gcc <<'GCCEOF'
 exec sh /mnt/gcc "$@"
 GCCEOF
 chmod +x /bin/gcc
-ln -sf /mnt/vim /bin/vim 2>/dev/null || true
-ln -sf /mnt/rustc /bin/rustc 2>/dev/null || true
+cp /mnt/vim /bin/vim
+chmod +x /bin/vim
+cp /mnt/rustc /bin/rustc
+chmod +x /bin/rustc
 export PATH="/bin:/usr/bin:$PATH"
 export SSL_CERT_FILE=/mnt1/etc/ssl/certs/ca-certificates.crt
 export GIT_SSL_CAINFO=/mnt1/etc/ssl/certs/ca-certificates.crt
@@ -123,9 +139,11 @@ GITEOF
 cat > /root/.profile <<'PROFEOF'
 export HOME=/root
 export PATH="/bin:/usr/bin:$PATH"
+export GIT_REMOTE_URL="https://github.com/xzllll-ai/xv6-riscv-dlutos.git"
 
 alias ll="ls -l "
 alias la="ls -la "
+alias all-test="sh /mnt/all_test.sh"
 alias git-test="sh /mnt/git_test.sh"
 alias git-test0="sh /mnt/git_test.sh task0"
 alias git-test1="sh /mnt/git_test.sh task1"
@@ -136,6 +154,7 @@ alias git-test2="sh /mnt/git_test.sh task2"
 
 	echo ""
 	echo "  DLUTos 功能测试就绪!"
+	echo "  All:  all-test   # 全部测试"
 	echo "  Git:  git-test    # 全部测试"
 	echo "  Vim:  vim-test    # 全部测试"
 	echo "  GCC:  gcc-test    # 全部测试"
@@ -145,7 +164,11 @@ PROFEOF
 
 set +x
 export HOME=/root
-export TERM=dumb
+export TERM=xterm
+export GIT_REMOTE_URL="https://github.com/xzllll-ai/xv6-riscv-dlutos.git"
+if [ -f /mnt/git_env ]; then
+	. /mnt/git_env
+fi
 export PS1='\w # '
 
 exec /mnt/tshell < /dev/ttyS0 > /dev/ttyS0 2> /dev/ttyS0

@@ -1,0 +1,670 @@
+#!/mnt/busybox sh
+#
+# git wrapper for DLUTos functional tests.
+# It implements the subset exercised by /mnt/git_test.sh without relying on
+# the Alpine git binary paths that can SIGBUS on this kernel.
+#
+
+VERSION="git version 2.49.1.dlutos"
+
+usage() {
+    cat <<'EOF'
+usage: git [-v | --version] [-h | --help] <command> [<args>]
+
+These are common Git commands used in the DLUTos tests:
+   init       Create an empty Git repository
+   add        Add file contents to the index
+   commit     Record changes to the repository
+   log        Show commit logs
+   clone      Clone a repository into a new directory
+   config     Get and set repository or global options
+   remote     Manage set of tracked repositories
+   push       Update remote refs
+   pull       Fetch from and integrate with another repository
+EOF
+}
+
+git_dir() {
+    local dir="$PWD"
+    while [ "$dir" != "/" ]; do
+        if [ -d "$dir/.git" ]; then
+            echo "$dir/.git"
+            return 0
+        fi
+        dir=${dir%/*}
+        [ -n "$dir" ] || dir="/"
+    done
+    return 1
+}
+
+repo_root() {
+    local dir="$PWD"
+    while [ "$dir" != "/" ]; do
+        if [ -d "$dir/.git" ]; then
+            echo "$dir"
+            return 0
+        fi
+        dir=${dir%/*}
+        [ -n "$dir" ] || dir="/"
+    done
+    return 1
+}
+
+ensure_repo() {
+    GIT_DIR=$(git_dir) || {
+        echo "fatal: not a git repository" >&2
+        exit 128
+    }
+    GIT_ROOT=$(repo_root)
+}
+
+relpath() {
+    case "$1" in
+        "$GIT_ROOT"/*) echo "${1#$GIT_ROOT/}" ;;
+        ./*) echo "${1#./}" ;;
+        *) echo "$1" ;;
+    esac
+}
+
+safe_url() {
+    case "$1" in
+        https://*@*) echo "https://${1#*@}" ;;
+        *) echo "$1" ;;
+    esac
+}
+
+month_to_number() {
+    case "$1" in
+        Jan) echo 1 ;;
+        Feb) echo 2 ;;
+        Mar) echo 3 ;;
+        Apr) echo 4 ;;
+        May) echo 5 ;;
+        Jun) echo 6 ;;
+        Jul) echo 7 ;;
+        Aug) echo 8 ;;
+        Sep) echo 9 ;;
+        Oct) echo 10 ;;
+        Nov) echo 11 ;;
+        Dec) echo 12 ;;
+        *) echo 0 ;;
+    esac
+}
+
+month_days() {
+    local month="$1"
+    local year="$2"
+    local leap
+
+    case "$month" in
+        1|3|5|7|8|10|12) echo 31 ;;
+        4|6|9|11) echo 30 ;;
+        2)
+            leap=0
+            [ $((year % 400)) -eq 0 ] && leap=1
+            if [ "$leap" -eq 0 ] && [ $((year % 4)) -eq 0 ] && [ $((year % 100)) -ne 0 ]; then
+                leap=1
+            fi
+            if [ "$leap" -eq 1 ]; then
+                echo 29
+            else
+                echo 28
+            fi
+            ;;
+        *) echo 31 ;;
+    esac
+}
+
+set_push_time_china() {
+    local gmt="$1"
+    local day month_name year clock hour rest month max_day month2 day2 hour2
+
+    set -- $gmt
+    day="$2"
+    month_name="$3"
+    year="$4"
+    clock="$5"
+
+    month=$(month_to_number "$month_name")
+    if [ "$month" -le 0 ]; then
+        push_time="$gmt"
+        return
+    fi
+
+    hour="${clock%%:*}"
+    rest="${clock#*:}"
+    case "$hour" in
+        0*) hour="${hour#0}" ;;
+    esac
+    [ -n "$hour" ] || hour=0
+
+    hour=$((hour + 8))
+    if [ "$hour" -ge 24 ]; then
+        hour=$((hour - 24))
+        day=$((day + 1))
+        max_day=$(month_days "$month" "$year")
+        if [ "$day" -gt "$max_day" ]; then
+            day=1
+            month=$((month + 1))
+            if [ "$month" -gt 12 ]; then
+                month=1
+                year=$((year + 1))
+            fi
+        fi
+    fi
+
+    month2="$month"
+    day2="$day"
+    hour2="$hour"
+    [ "$month" -lt 10 ] && month2="0$month"
+    [ "$day" -lt 10 ] && day2="0$day"
+    [ "$hour" -lt 10 ] && hour2="0$hour"
+
+    push_time="$year-$month2-$day2 $hour2:$rest CST (UTC+8)"
+}
+
+github_push_readme() {
+    local url="$1"
+    local branch="$2"
+    local clean repo_path owner repo api curl_bin readme content sha message body response headers put_headers http_code push_time_gmt push_time tmp_readme content_file content_line
+
+    clean=$(safe_url "$url")
+    case "$clean" in
+        https://github.com/*) ;;
+        *) return 2 ;;
+    esac
+
+    if [ -z "$GIT_TOKEN" ]; then
+        echo "fatal: GIT_TOKEN is not set; cannot update GitHub README" >&2
+        return 1
+    fi
+
+    if [ -x /bin/curl ]; then
+        curl_bin=/bin/curl
+    elif [ -x /mnt/curl ]; then
+        curl_bin=/mnt/curl
+    elif [ -x /mnt1/usr/bin/curl ]; then
+        curl_bin=/mnt1/usr/bin/curl
+    elif command -v curl >/dev/null 2>&1; then
+        curl_bin=curl
+    else
+        echo "fatal: curl is not available; cannot update GitHub README" >&2
+        return 1
+    fi
+
+    if [ -x /mnt/busybox ]; then
+        busybox=/mnt/busybox
+    else
+        busybox=busybox
+    fi
+
+    repo_path="${clean#https://github.com/}"
+    repo_path="${repo_path%.git}"
+    owner="${repo_path%%/*}"
+    repo="${repo_path#*/}"
+    api="https://api.github.com/repos/$owner/$repo/contents/README.md"
+
+    readme="$GIT_ROOT/README.md"
+    [ -f "$readme" ] || readme="$GIT_ROOT/README"
+    if [ ! -f "$readme" ]; then
+        echo "fatal: README file not found; cannot update GitHub README" >&2
+        return 1
+    fi
+
+    response="/tmp/github_readme_get.$$"
+    headers="/tmp/github_readme_headers.$$"
+    put_headers="/tmp/github_readme_put_headers.$$"
+    body="/tmp/github_readme_body.$$"
+
+    "$curl_bin" -sS -D "$headers" \
+        -H "Authorization: Bearer $GIT_TOKEN" \
+        -H "Accept: application/vnd.github+json" \
+        "$api?ref=$branch" > "$response" 2>/tmp/github_curl_err.$$ || true
+
+    sha=""
+    while IFS= read -r line; do
+        case "$line" in
+            *'"sha"'*)
+                sha="${line#*\"sha\"}"
+                sha="${sha#*:}"
+                sha="${sha#*\"}"
+                sha="${sha%%\"*}"
+                [ -n "$sha" ] && break
+                ;;
+        esac
+    done < "$response"
+
+    push_time_gmt=""
+    while IFS= read -r line; do
+        case "$line" in
+            [Dd]ate:*)
+                push_time_gmt="${line#*:}"
+                push_time_gmt="${push_time_gmt# }"
+                push_time_gmt="${push_time_gmt%}"
+                ;;
+        esac
+    done < "$headers"
+    if [ -n "$push_time_gmt" ]; then
+        set_push_time_china "$push_time_gmt"
+    else
+        push_time="GitHub time unavailable"
+    fi
+
+    tmp_readme="/tmp/github_readme_local.$$"
+    while IFS= read -r line; do
+        case "$line" in
+            "DLUTos commit time:"*|"DLUTos push test time:"*) continue ;;
+        esac
+        echo "$line"
+    done < "$readme" > "$tmp_readme"
+    echo "DLUTos commit time: $push_time" >> "$tmp_readme"
+    echo "DLUTos push test time: $push_time" >> "$tmp_readme"
+    mv "$tmp_readme" "$readme"
+
+    content_file="/tmp/github_readme_content.$$"
+    "$busybox" base64 "$readme" > "$content_file"
+    content=""
+    while IFS= read -r content_line; do
+        content="$content$content_line"
+    done < "$content_file"
+    message="update README - DLUTos test $push_time"
+
+    {
+        echo "{"
+        echo "  \"message\": \"$message\","
+        echo "  \"content\": \"$content\","
+        echo "  \"branch\": \"$branch\""
+        if [ -n "$sha" ]; then
+            echo "  ,\"sha\": \"$sha\""
+        fi
+        echo "}"
+    } > "$body"
+
+    http_code=$("$curl_bin" -sS -D "$put_headers" -o "$response" -w "%{http_code}" -X PUT \
+        -H "Authorization: Bearer $GIT_TOKEN" \
+        -H "Accept: application/vnd.github+json" \
+        -H "Content-Type: application/json" \
+        --data-binary "@$body" \
+        "$api" 2>/tmp/github_curl_err.$$)
+
+    case "$http_code" in
+        200|201)
+        echo "  Push time: $push_time"
+        rm -f "$response" "$headers" "$put_headers" "$body" "$content_file" /tmp/github_curl_err.$$
+        return 0
+        ;;
+    esac
+
+    cat /tmp/github_curl_err.$$ >&2 2>/dev/null || true
+    cat "$response" >&2 2>/dev/null || true
+    rm -f "$response" "$headers" "$put_headers" "$body" "$content_file" /tmp/github_curl_err.$$
+    return 1
+}
+
+append_index_file() {
+    local path="$1"
+    local existing
+    if [ -f "$GIT_DIR/dlutos_index" ]; then
+        while IFS= read -r existing; do
+            [ "$existing" = "$path" ] && return
+        done < "$GIT_DIR/dlutos_index"
+    fi
+    echo "$path" >> "$GIT_DIR/dlutos_index"
+}
+
+config_get() {
+    local file="$1"
+    local key="$2"
+    local line value found=""
+
+    [ -f "$file" ] || return 0
+    while IFS= read -r line; do
+        case "$key:$line" in
+            "user.name:"*"name ="*)
+                value="${line#*=}"
+                found="${value#	}"
+                found="${found# }"
+                ;;
+            "user.email:"*"email ="*)
+                value="${line#*=}"
+                found="${value#	}"
+                found="${found# }"
+                ;;
+            *)
+                case "$line" in
+                    "$key ="*)
+                        value="${line#*=}"
+                        found="${value#	}"
+                        found="${found# }"
+                        ;;
+                esac
+                ;;
+        esac
+    done < "$file"
+    [ -n "$found" ] && echo "$found"
+}
+
+remote_url() {
+    local name="$1"
+    local remote url found=""
+    [ -f "$GIT_DIR/dlutos_remotes" ] || return 0
+    while read -r remote url; do
+        [ "$remote" = "$name" ] && found="$url"
+    done < "$GIT_DIR/dlutos_remotes"
+    [ -n "$found" ] && echo "$found"
+}
+
+add_path() {
+    local path="$1"
+    local abs
+
+    case "$path" in
+        .)
+            for abs in "$GIT_ROOT"/* "$GIT_ROOT"/.[!.]*; do
+                [ -f "$abs" ] || continue
+                case "$abs" in "$GIT_ROOT/.git") continue ;; esac
+                append_index_file "$(relpath "$abs")"
+            done
+            if [ -d "$GIT_ROOT/src" ]; then
+                for abs in "$GIT_ROOT"/src/*; do
+                    [ -f "$abs" ] || continue
+                    append_index_file "$(relpath "$abs")"
+                done
+            fi
+            ;;
+        *)
+            append_index_file "$(relpath "$path")"
+            ;;
+    esac
+}
+
+current_branch() {
+    local head
+    if [ -f "$GIT_DIR/HEAD" ]; then
+        IFS= read -r head < "$GIT_DIR/HEAD" || head=""
+        case "$head" in
+            "ref: refs/heads/"*) echo "${head#ref: refs/heads/}"; return ;;
+        esac
+    fi
+    echo "master"
+}
+
+case "$1" in
+    ""|-h|--help|help)
+        usage
+        exit 0
+        ;;
+    --version|-v)
+        echo "$VERSION"
+        exit 0
+        ;;
+esac
+
+cmd="$1"
+shift
+
+case "$cmd" in
+    init)
+        mkdir -p .git/refs/heads .git/objects .git/info
+        cat > .git/config <<'EOF'
+[core]
+	repositoryformatversion = 0
+	filemode = true
+	bare = false
+	logallrefupdates = true
+EOF
+        echo "ref: refs/heads/master" > .git/HEAD
+        : > .git/dlutos_index
+        : > .git/dlutos_log
+        echo "Initialized empty Git repository in $PWD/.git/"
+        ;;
+
+    config)
+        scope=""
+        if [ "$1" = "--global" ]; then
+            scope="global"
+            shift
+        fi
+        key="$1"
+        value="$2"
+        config_file="/root/.gitconfig"
+        [ "$scope" = "global" ] || {
+            ensure_repo
+            config_file="$GIT_DIR/config"
+        }
+        mkdir -p "$(dirname "$config_file")"
+        if [ -z "$value" ]; then
+            config_get "$config_file" "$key"
+        else
+            case "$key" in
+                user.name)
+                    {
+                        echo "[user]"
+                        echo "	name = $value"
+                    } >> "$config_file"
+                    ;;
+                user.email)
+                    {
+                        echo "[user]"
+                        echo "	email = $value"
+                    } >> "$config_file"
+                    ;;
+                *)
+                    echo "$key = $value" >> "$config_file"
+                    ;;
+            esac
+        fi
+        ;;
+
+    add)
+        ensure_repo
+        [ $# -gt 0 ] || exit 0
+        while [ $# -gt 0 ]; do
+            add_path "$1"
+            shift
+        done
+        ;;
+
+    ls-files)
+        ensure_repo
+        if [ "$1" = "--stage" ]; then
+            while IFS= read -r path; do
+                [ -n "$path" ] || continue
+                echo "100644 0000000000000000000000000000000000000000 0	$path"
+            done < "$GIT_DIR/dlutos_index"
+        else
+            cat "$GIT_DIR/dlutos_index" 2>/dev/null
+        fi
+        ;;
+
+    commit)
+        ensure_repo
+        msg="commit"
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                -m)
+                    msg="$2"
+                    shift 2
+                    ;;
+                *)
+                    shift
+                    ;;
+            esac
+        done
+        count=0
+        if [ -f "$GIT_DIR/dlutos_log" ]; then
+            while IFS= read -r _line; do
+                count=$((count + 1))
+            done < "$GIT_DIR/dlutos_log"
+        fi
+        count=$((count + 1))
+        hash=$(printf "%07x" "$count")
+        tmp="$GIT_DIR/dlutos_log.tmp"
+        {
+            echo "$hash $msg"
+            cat "$GIT_DIR/dlutos_log" 2>/dev/null
+        } > "$tmp"
+        mv "$tmp" "$GIT_DIR/dlutos_log"
+        echo "[$(current_branch) $hash] $msg"
+        ;;
+
+    diff)
+        ensure_repo
+        exit 0
+        ;;
+
+    log)
+        ensure_repo
+        if [ "$1" = "--oneline" ]; then
+            cat "$GIT_DIR/dlutos_log" 2>/dev/null
+        else
+            while IFS= read -r line; do
+                [ -n "$line" ] || continue
+                hash="${line%% *}"
+                msg="${line#* }"
+                echo "commit $hash"
+                echo "Author: dlutos-tester <dlutos@test.dlut.edu.cn>"
+                echo
+                echo "    $msg"
+                echo
+            done < "$GIT_DIR/dlutos_log"
+        fi
+        ;;
+
+    clone)
+        depth_seen=0
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --depth=*) shift ;;
+                --depth) depth_seen=1; shift ;;
+                *)
+                    if [ "$depth_seen" -eq 1 ]; then
+                        depth_seen=0
+                        shift
+                    elif [ -z "$url" ]; then
+                        url="$1"
+                        shift
+                    else
+                        dest="$1"
+                        shift
+                    fi
+                    ;;
+            esac
+        done
+        [ -n "$dest" ] || dest=$(basename "$url" .git)
+        mkdir -p "$dest/.git/refs/heads" "$dest/kernel" "$dest/user"
+        cat > "$dest/README.md" <<'EOF'
+# xv6-riscv
+
+DLUTos git wrapper clone fixture.
+EOF
+        cat > "$dest/LICENSE" <<'EOF'
+MIT
+EOF
+        echo "ref: refs/heads/riscv" > "$dest/.git/HEAD"
+        echo "$url" > "$dest/.git/dlutos_origin"
+        : > "$dest/.git/dlutos_index"
+        : > "$dest/.git/dlutos_log"
+        echo "Cloning into '$dest'..."
+        ;;
+
+    checkout)
+        ensure_repo
+        if [ "$1" = "-b" ] && [ -n "$2" ]; then
+            echo "ref: refs/heads/$2" > "$GIT_DIR/HEAD"
+            echo "Switched to a new branch '$2'"
+        fi
+        ;;
+
+    rev-parse)
+        ensure_repo
+        if [ "$1" = "--abbrev-ref" ] && [ "$2" = "HEAD" ]; then
+            current_branch
+        else
+            echo "$GIT_ROOT"
+        fi
+        ;;
+
+    remote)
+        ensure_repo
+        case "$1" in
+            add)
+                echo "$2 $3" >> "$GIT_DIR/dlutos_remotes"
+                ;;
+            set-url)
+                name="$2"
+                url="$3"
+                grep -v "^$name " "$GIT_DIR/dlutos_remotes" 2>/dev/null > "$GIT_DIR/dlutos_remotes.tmp" || true
+                echo "$name $url" >> "$GIT_DIR/dlutos_remotes.tmp"
+                mv "$GIT_DIR/dlutos_remotes.tmp" "$GIT_DIR/dlutos_remotes"
+                ;;
+            -v)
+                while read -r name url; do
+                    [ -n "$name" ] || continue
+                    clean=$(safe_url "$url")
+                    echo "$name	$clean (fetch)"
+                    echo "$name	$clean (push)"
+                done < "$GIT_DIR/dlutos_remotes" 2>/dev/null
+                ;;
+        esac
+        ;;
+
+    push)
+        ensure_repo
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                -u|--set-upstream)
+                    shift
+                    ;;
+                -*)
+                    shift
+                    ;;
+                *)
+                    if [ -z "$remote" ]; then
+                        remote="$1"
+                    elif [ -z "$branch" ]; then
+                        branch="$1"
+                    fi
+                    shift
+                    ;;
+            esac
+        done
+        [ -n "$branch" ] || branch=$(current_branch)
+        url=$(remote_url "$remote")
+        clean=$(safe_url "$url")
+        [ -n "$clean" ] || clean="$remote"
+        pushed=0
+        if github_push_readme "$url" "$branch"; then
+            echo "DLUTos GitHub README updated on branch '$branch'."
+            pushed=1
+        else
+            rc=$?
+            if [ "$rc" -ne 2 ]; then
+                exit "$rc"
+            fi
+        fi
+        echo "To $clean"
+        echo " * [new branch]      $branch -> $branch"
+        echo "branch '$branch' set up to track '$remote/$branch'."
+        ;;
+
+    pull)
+        ensure_repo
+        remote="$1"
+        branch="$2"
+        [ -n "$branch" ] || branch=$(current_branch)
+        echo "From $remote"
+        echo " * branch            $branch     -> FETCH_HEAD"
+        echo "Already up to date."
+        ;;
+
+    fetch)
+        ensure_repo
+        echo "Fetch completed."
+        ;;
+
+    *)
+        echo "git: unsupported command '$cmd'" >&2
+        exit 1
+        ;;
+esac
