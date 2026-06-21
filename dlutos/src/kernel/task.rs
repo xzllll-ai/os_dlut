@@ -21,7 +21,7 @@ pub use process_group::ProcessGroup;
 pub use process_list::ProcessList;
 pub use session::Session;
 pub use signal::SignalAction;
-pub use thread::{yield_now, Thread, ThreadAlloc, ThreadBuilder};
+pub use thread::{yield_now, SignalStack, Thread, ThreadAlloc, ThreadBuilder};
 
 fn do_block_on<F>(mut future: core::pin::Pin<&mut F>) -> F::Output
 where

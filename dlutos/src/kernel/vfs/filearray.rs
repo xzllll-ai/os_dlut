@@ -319,6 +319,21 @@ impl FileArray {
         Ok((read_fd, write_fd))
     }
 
+    pub fn socketpair(&self, flags: OpenFlags) -> KResult<(FD, FD)> {
+        let mut inner = self.inner.lock();
+        let (files, fd_alloc) = inner.split_borrow();
+
+        let left_fd = fd_alloc.next_fd(files);
+        let right_fd = fd_alloc.next_fd(files);
+        let fdflag = flags.as_fd_flags();
+
+        let (left, right) = Pipe::socketpair(flags);
+        inner.do_insert(left_fd, fdflag, left);
+        inner.do_insert(right_fd, fdflag, right);
+
+        Ok((left_fd, right_fd))
+    }
+
     pub fn socket(&self, socket: Arc<dyn Socket>) -> KResult<FD> {
         let mut inner = self.inner.lock();
         let (files, fd_alloc) = inner.split_borrow();
@@ -423,6 +438,24 @@ impl FileArray {
         Ok(ret)
     }
 
+    pub fn set_cloexec(&self, fd: FD) -> KResult<()> {
+        let mut inner = self.inner.lock();
+        let mut cursor = inner.files.find_mut(&fd);
+        let mut ofile = cursor.remove().ok_or(EBADF)?;
+        ofile.flags.insert(FDFlags::FD_CLOEXEC);
+        cursor.insert(ofile);
+        Ok(())
+    }
+
+    pub fn set_nonblock(&self, fd: FD, nonblock: bool) -> KResult<()> {
+        let inner = self.inner.lock();
+        let ofile = inner.files.get_fd(fd).ok_or(EBADF)?;
+        let mut flags = ofile.file.get_flags();
+        flags.set(OpenFlags::O_NONBLOCK, nonblock);
+        ofile.file.set_flags(flags);
+        Ok(())
+    }
+
     /// Only used for init process.
     pub fn open_console(&self) {
         let mut inner = self.inner.lock();
@@ -478,6 +511,10 @@ impl FileArrayInner {
 
 impl FD {
     pub const AT_FDCWD: FD = FD(-100i32 as u32);
+
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
 }
 
 impl core::fmt::Debug for FD {

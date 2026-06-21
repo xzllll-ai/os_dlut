@@ -11,7 +11,7 @@ use crate::kernel::mem::PageBuffer;
 use crate::kernel::syscall::{User, UserMut};
 use crate::kernel::task::{
     do_clone, futex_wait, futex_wake, yield_now, FutexFlags, FutexOp, ProcessList, ProgramLoader,
-    RobustListHead, SignalAction, Thread, WaitId, WaitType,
+    RobustListHead, SignalAction, SignalStack, Thread, WaitId, WaitType,
 };
 use crate::kernel::task::{parse_futexop, CloneArgs};
 use crate::kernel::timer::sleep;
@@ -672,7 +672,16 @@ async fn rt_sigaction(
 }
 
 #[dlutos_macros::define_syscall(SYS_SIGALTSTACK)]
-async fn SYS_SIGALTSTACK() -> KResult<()> {
+async fn sigaltstack(ss: User<SignalStack>, old_ss: UserMut<SignalStack>) -> KResult<()> {
+    if !old_ss.is_null() {
+        UserPointerMut::new(old_ss)?.write(thread.signal_stack())?;
+    }
+
+    if !ss.is_null() {
+        let new_stack = UserPointer::new(ss)?.read()?;
+        thread.set_signal_stack(new_stack);
+    }
+
     Ok(())
 }
 
@@ -804,7 +813,7 @@ async fn futex(
     };
 
     match futex_op {
-        FutexOp::FUTEX_WAIT => {
+        FutexOp::FUTEX_WAIT | FutexOp::FUTEX_WAIT_BITSET => {
             if futex_flag.contains(FutexFlags::FUTEX_PRIVATE)
                 && val == 2
                 && thread.process.thread_count().await <= 1
@@ -819,6 +828,9 @@ async fn futex(
             return Ok(0);
         }
         FutexOp::FUTEX_WAKE => {
+            return futex_wake(uaddr, pid, val as u32).await;
+        }
+        FutexOp::FUTEX_WAKE_BITSET => {
             return futex_wake(uaddr, pid, val as u32).await;
         }
         FutexOp::FUTEX_REQUEUE => {

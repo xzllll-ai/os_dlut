@@ -2,7 +2,7 @@ use super::{KResult, SAVED_DATA_SIZE};
 use crate::{
     io::BufferFill as _,
     kernel::{
-        constants::{EFAULT, EINVAL},
+        constants::EFAULT,
         syscall::UserMut,
         user::UserBuffer,
     },
@@ -36,6 +36,7 @@ pub enum SignalAction {
         handler: SigActionHandler,
         restorer: Option<SigActionRestorer>,
         mask: SigSet,
+        siginfo: bool,
     },
 }
 
@@ -100,7 +101,10 @@ impl SignalAction {
         fpu_state: &mut FpuState,
     ) -> KResult<()> {
         let SignalAction::SimpleHandler {
-            handler, restorer, ..
+            handler,
+            restorer,
+            siginfo,
+            ..
         } = self
         else {
             unreachable!("Default and Ignore actions should not be handled here");
@@ -132,11 +136,14 @@ impl SignalAction {
             }
         };
 
+        let args = [Long::new_val(signal.into_raw() as _).get(), 0, 0];
+        let args = &args[..if siginfo { 3 } else { 1 }];
+
         trap_ctx.set_user_call_frame(
             handler.addr().addr(),
             Some(saved_data_addr.addr()),
             Some(return_address),
-            &[Long::new_val(signal.into_raw() as _).get()],
+            args,
             |vaddr, data| -> Result<(), u32> {
                 let mut buffer = UserBuffer::new(UserMut::new(vaddr), data.len())?;
                 for ch in data.iter() {
@@ -181,11 +188,27 @@ impl TryFromSigAction for SignalAction {
             handler: SigActionHandler::null(),
             restorer: None,
             mask: SigSet::empty(),
+            siginfo: false,
         }
     }
 
     fn set_siginfo(self) -> Result<Self, Self::Error> {
-        Err(EINVAL)
+        if let Self::SimpleHandler {
+            handler,
+            restorer,
+            mask,
+            ..
+        } = self
+        {
+            Ok(Self::SimpleHandler {
+                handler,
+                restorer,
+                mask,
+                siginfo: true,
+            })
+        } else {
+            unreachable!()
+        }
     }
 
     fn handler(mut self, new_handler: SigActionHandler) -> Self {
@@ -225,6 +248,7 @@ impl From<SignalAction> for SigAction {
                 handler,
                 restorer,
                 mask,
+                ..
             } => {
                 let action = SigAction::new().handler(handler).mask(mask);
 

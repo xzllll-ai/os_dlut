@@ -3,6 +3,7 @@ use core::net::Ipv4Addr;
 use core::net::SocketAddr;
 
 use crate::io::Buffer;
+use crate::io::Stream;
 use crate::io::IntoStream;
 use crate::kernel::constants::{EAFNOSUPPORT, EBADF, EINVAL, ENOTSOCK};
 use crate::kernel::syscall::file_rw::IoVec;
@@ -12,6 +13,7 @@ use crate::kernel::user::CheckedUserPointer;
 use crate::kernel::user::UserBuffer;
 use crate::kernel::user::UserPointer;
 use crate::kernel::user::UserPointerMut;
+use crate::kernel::vfs::File;
 use crate::kernel::vfs::filearray::FD;
 use crate::net::socket::tcp::TcpSocket;
 use crate::net::socket::udp::UdpSocket;
@@ -65,6 +67,67 @@ fn write_socket_addr(
     }
 }
 
+fn read_iov_buffers(msghdr: &MsgHdr) -> KResult<Vec<UserBuffer>> {
+    let mut iov_user = UserPointer::new(User::with_addr(msghdr.msg_iov))?;
+    (0..msghdr.msg_iovlen)
+        .map(|_| {
+            let iov_result = iov_user.read()?;
+            iov_user = iov_user.offset(1)?;
+            Ok(iov_result)
+        })
+        .filter_map(|iov_result| match iov_result {
+            Err(err) => Some(Err(err)),
+            Ok(IoVec {
+                len: Long::ZERO, ..
+            }) => None,
+            Ok(IoVec { base, len }) => {
+                Some(UserBuffer::new(UserMut::with_addr(base.addr()), len.get()))
+            }
+        })
+        .collect()
+}
+
+async fn recv_socketpair_msg(file: &File, msghdr_ptr: UserMut<MsgHdr>, msghdr: MsgHdr) -> KResult<usize> {
+    let mut tot = 0usize;
+    for mut buffer in read_iov_buffers(&msghdr)?.into_iter() {
+        let nread = file.read(&mut buffer, None).await?;
+        tot += nread;
+        if nread != buffer.total() {
+            break;
+        }
+    }
+
+    let mut updated_msghdr = msghdr;
+    updated_msghdr.msg_controllen = 0;
+    updated_msghdr.msg_flags = 0;
+    UserPointerMut::new(msghdr_ptr)?.write(updated_msghdr)?;
+
+    Ok(tot)
+}
+
+async fn send_socketpair_msg(file: &File, msghdr: MsgHdr) -> KResult<usize> {
+    let mut iov_user = UserPointer::new(User::with_addr(msghdr.msg_iov))?;
+    let mut tot = 0usize;
+    for _ in 0..msghdr.msg_iovlen {
+        let iov = iov_user.read()?;
+        iov_user = iov_user.offset(1)?;
+
+        let IoVec { base, len } = iov;
+        if len == Long::ZERO {
+            continue;
+        }
+
+        let mut stream =
+            CheckedUserPointer::new(User::with_addr(base.addr()), len.get())?.into_stream();
+        let nwrote = file.write(&mut stream, None).await?;
+        tot += nwrote;
+        if nwrote == 0 || nwrote != stream.total() {
+            break;
+        }
+    }
+    Ok(tot)
+}
+
 #[dlutos_macros::define_syscall(SYS_SOCKET)]
 async fn socket(domain: u32, type_: u32, protocol: u32) -> KResult<FD> {
     let domain = SockDomain::try_from(domain).map_err(|_| EINVAL)?;
@@ -87,6 +150,38 @@ async fn socket(domain: u32, type_: u32, protocol: u32) -> KResult<FD> {
     };
 
     thread.files.socket(socket)
+}
+
+#[dlutos_macros::define_syscall(SYS_SOCKETPAIR)]
+async fn socketpair(
+    domain: u32,
+    type_: u32,
+    protocol: u32,
+    socket_fds: UserMut<[FD; 2]>,
+) -> KResult<()> {
+    let domain = SockDomain::try_from(domain).map_err(|_| EINVAL)?;
+    let sock_type = SockType::try_from(type_ & SOCK_TYPE_MASK).map_err(|_| EINVAL)?;
+    let sock_flags = SockFlags::from_bits_truncate(type_ & !SOCK_TYPE_MASK);
+
+    if domain != SockDomain::AF_UNIX
+        || !matches!(sock_type, SockType::SOCK_STREAM | SockType::SOCK_SEQPACKET)
+        || protocol != 0
+    {
+        return Err(EAFNOSUPPORT);
+    }
+
+    let mut flags = posix_types::open::OpenFlags::O_RDWR;
+    if sock_flags.contains(SockFlags::SOCK_CLOEXEC) {
+        flags |= posix_types::open::OpenFlags::O_CLOEXEC;
+    }
+    if sock_flags.contains(SockFlags::SOCK_NONBLOCK) {
+        flags |= posix_types::open::OpenFlags::O_NONBLOCK;
+    }
+
+    let fds = thread.files.socketpair(flags)?;
+    UserPointerMut::new(socket_fds)?.write([fds.0, fds.1])?;
+
+    Ok(())
 }
 
 #[dlutos_macros::define_syscall(SYS_SETSOCKOPT)]
@@ -254,34 +349,29 @@ async fn connect(sockfd: FD, sockaddr_ptr: User<CSockAddr>, addrlen: u32) -> KRe
     res
 }
 
-#[dlutos_macros::define_syscall(SYS_RECVMSG)]
-async fn recvmsg(sockfd: FD, msghdr_ptr: UserMut<MsgHdr>, flags: u32) -> KResult<usize> {
-    let socket = thread
+#[dlutos_macros::define_syscall(SYS_SHUTDOWN)]
+async fn shutdown(sockfd: FD, _how: u32) -> KResult<()> {
+    thread
         .files
         .get(sockfd)
         .ok_or(EBADF)?
         .get_socket()?
         .ok_or(ENOTSOCK)?;
+    Ok(())
+}
+
+#[dlutos_macros::define_syscall(SYS_RECVMSG)]
+async fn recvmsg(sockfd: FD, msghdr_ptr: UserMut<MsgHdr>, flags: u32) -> KResult<usize> {
+    let file = thread.files.get(sockfd).ok_or(EBADF)?;
 
     let msghdr = UserPointer::new(msghdr_ptr.as_const())?.read()?;
 
-    let mut iov_user = UserPointer::new(User::with_addr(msghdr.msg_iov))?;
-    let iov_buffers = (0..msghdr.msg_iovlen)
-        .map(|_| {
-            let iov_result = iov_user.read()?;
-            iov_user = iov_user.offset(1)?;
-            Ok(iov_result)
-        })
-        .filter_map(|iov_result| match iov_result {
-            Err(err) => Some(Err(err)),
-            Ok(IoVec {
-                len: Long::ZERO, ..
-            }) => None,
-            Ok(IoVec { base, len }) => {
-                Some(UserBuffer::new(UserMut::with_addr(base.addr()), len.get()))
-            }
-        })
-        .collect::<KResult<Vec<_>>>()?;
+    if file.is_socketpair() {
+        return recv_socketpair_msg(&file, msghdr_ptr, msghdr).await;
+    }
+
+    let socket = file.get_socket()?.ok_or(ENOTSOCK)?;
+    let iov_buffers = read_iov_buffers(&msghdr)?;
 
     let mut recv_metadata = None;
     let mut tot = 0usize;
@@ -321,12 +411,13 @@ async fn recvfrom(
     srcaddr_ptr: UserMut<CSockAddr>,
     addrlen_ptr: UserMut<u32>,
 ) -> KResult<usize> {
-    let socket = thread
-        .files
-        .get(sockfd)
-        .ok_or(EBADF)?
-        .get_socket()?
-        .ok_or(ENOTSOCK)?;
+    let file = thread.files.get(sockfd).ok_or(EBADF)?;
+
+    if file.is_socketpair() {
+        return file.read(&mut UserBuffer::new(buf, len)?, None).await;
+    }
+
+    let socket = file.get_socket()?.ok_or(ENOTSOCK)?;
 
     let (ret, recv_meta) = socket.recv(&mut UserBuffer::new(buf, len)?).await?;
 
@@ -339,14 +430,15 @@ async fn recvfrom(
 
 #[dlutos_macros::define_syscall(SYS_SENDMSG)]
 async fn sendmsg(sockfd: FD, msghdr: UserMut<MsgHdr>, flags: u32) -> KResult<usize> {
-    let socket = thread
-        .files
-        .get(sockfd)
-        .ok_or(EBADF)?
-        .get_socket()?
-        .ok_or(ENOTSOCK)?;
+    let file = thread.files.get(sockfd).ok_or(EBADF)?;
 
     let msghdr = UserPointer::new(msghdr.as_const())?.read()?;
+
+    if file.is_socketpair() {
+        return send_socketpair_msg(&file, msghdr).await;
+    }
+
+    let socket = file.get_socket()?.ok_or(ENOTSOCK)?;
 
     let mut iov_user = UserPointer::new(User::with_addr(msghdr.msg_iov))?;
     let iov_streams = (0..msghdr.msg_iovlen)
@@ -400,12 +492,14 @@ async fn sendto(
     dstaddr_ptr: User<CSockAddr>,
     addrlen: u32,
 ) -> KResult<usize> {
-    let socket = thread
-        .files
-        .get(sockfd)
-        .ok_or(EBADF)?
-        .get_socket()?
-        .ok_or(ENOTSOCK)?;
+    let file = thread.files.get(sockfd).ok_or(EBADF)?;
+
+    if file.is_socketpair() {
+        let mut user_stream = CheckedUserPointer::new(buf, len).map(|ptr| ptr.into_stream())?;
+        return file.write(&mut user_stream, None).await;
+    }
+
+    let socket = file.get_socket()?.ok_or(ENOTSOCK)?;
 
     let remote_addr = if addrlen == 0 {
         None

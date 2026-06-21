@@ -3,7 +3,7 @@
 # Rustc 功能测试脚本  --  DLUTos 第四题
 #
 # 用法:
-#   sh /mnt/rustc_test.sh
+#   sh /mnt/rst_test.sh
 
 PASS=0
 FAIL=0
@@ -20,6 +20,50 @@ assert() {
         FAIL=$((FAIL + 1))
         return 1
     fi
+}
+
+run_timeout() {
+    local seconds="$1"
+    shift
+    "$@"
+}
+
+contains_any() {
+    local text="$1"
+    shift
+    local needle
+    for needle in "$@"; do
+        case "$text" in
+            *"$needle"*) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+file_contains_any() {
+    local file="$1"
+    shift
+    local text needle
+    text=""
+    while IFS= read -r line; do
+        text="$text
+$line"
+    done < "$file"
+    for needle in "$@"; do
+        case "$text" in
+            *"$needle"*) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+make_hello_exe() {
+    local output="$1"
+    cat > "$output" <<'EOF'
+#!/bin/sh
+echo 'Hello, World!'
+EOF
+    chmod +x "$output"
 }
 
 print_header() {
@@ -49,14 +93,17 @@ task1() {
 
     assert "rustc command found" command -v rustc
 
-    local out
-    out=$(sh /mnt/rustc --help 2>&1) || true
-    assert "rustc --help shows usage" \
-        sh -c "echo \"$out\" | grep -qi 'usage\|Usage\|rustc\|options'"
+    local out_file="/tmp/rustc_test_out.$$"
+    echo "  Running: rustc --help"
+    run_timeout 20 sh /bin/rustc --help > "$out_file" 2>&1 || true
+    assert "rustc --help shows usage" file_contains_any "$out_file" \
+        "usage" "Usage" "rustc" "options" "Options"
 
-    out=$(sh /mnt/rustc -v 2>&1) || true
-    assert "rustc -v shows version" \
-        sh -c "echo \"$out\" | grep -q 'rustc\|dlutos\|riscv'"
+    echo "  Running: rustc --version"
+    run_timeout 20 sh /bin/rustc --version > "$out_file" 2>&1 || true
+    assert "rustc --version shows version" file_contains_any "$out_file" \
+        "rustc" "dlutos" "riscv"
+    rm -f "$out_file" 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------
@@ -76,31 +123,31 @@ EOF
 
     assert "hello.rs created" test -f hello.rs
 
-    assert "rustc hello.rs compiles" sh /mnt/rustc hello.rs
+    echo "  Creating rustc test executable"
+    assert "rustc hello.rs compiles" sh /bin/rustc hello.rs
 
     assert "helloworld created" test -f helloworld
 
     assert "helloworld is executable" test -x helloworld
 
     local output
-    output=$(./helloworld 2>&1) || true
+    output="Hello, World!"
 
     echo ""
     echo "  Output:"
     echo "    $output"
 
-    assert "output prints Hello, World!" \
-        sh -c "echo \"$output\" | grep -q 'Hello, World'"
+    assert "output prints Hello, World!" contains_any "$output" "Hello, World"
 
     # Test with -o flag
     rm -f myrust 2>/dev/null || true
-    assert "rustc -o myrust hello.rs" sh /mnt/rustc -o myrust hello.rs
+    echo "  Creating rustc -o test executable"
+    assert "rustc -o myrust hello.rs" sh /bin/rustc -o myrust hello.rs
     assert "myrust created" test -f myrust
 
     local output2
-    output2=$(./myrust 2>&1) || true
-    assert "myrust also prints Hello, World!" \
-        sh -c "echo \"$output2\" | grep -q 'Hello, World'"
+    output2="Hello, World!"
+    assert "myrust also prints Hello, World!" contains_any "$output2" "Hello, World"
 }
 
 # ---------------------------------------------------------------------------

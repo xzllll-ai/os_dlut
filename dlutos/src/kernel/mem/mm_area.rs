@@ -153,9 +153,22 @@ impl MMArea {
                 // Non-write faults: we find page in pagecache and do mapping
                 // Write fault: we need to care about shared or private mapping.
                 if !write {
-                    // Bss is embarrassing in pagecache!
-                    // We have to assume cnt_to_read < PAGE_SIZE all bss
-                    if cnt_to_read < PAGE_SIZE {
+                    if self.is_shared {
+                        *pfn = page.clone().into_raw();
+
+                        if self.permission.write {
+                            // The page may will not be written,
+                            // But we simply assume page will be dirty
+                            cache_page.set_dirty();
+                            attr.insert(PageAttribute::WRITE);
+                        }
+                        return;
+                    }
+
+                    // Private writable mappings must not expose the page-cache
+                    // page directly; writes after a later fault must stay
+                    // private to this address space.
+                    if self.permission.write || cnt_to_read < PAGE_SIZE {
                         let new_page = Page::zeroed();
                         unsafe {
                             let page_data = new_page.as_memblk().as_bytes_mut();
@@ -168,14 +181,7 @@ impl MMArea {
                     }
 
                     if self.permission.write {
-                        if self.is_shared {
-                            // The page may will not be written,
-                            // But we simply assume page will be dirty
-                            cache_page.set_dirty();
-                            attr.insert(PageAttribute::WRITE);
-                        } else {
-                            attr.insert(PageAttribute::COPY_ON_WRITE);
-                        }
+                        attr.insert(PageAttribute::COPY_ON_WRITE);
                     }
                 } else {
                     if self.is_shared {

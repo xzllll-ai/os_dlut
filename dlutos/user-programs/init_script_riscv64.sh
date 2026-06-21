@@ -38,7 +38,18 @@ do_or_freeze $BUSYBOX mknod -m 666 /dev/ttyS1 c 4 65
 echo -n -e "deploying busybox... " >&2
 
 do_or_freeze $BUSYBOX mkdir -p /bin
-do_or_freeze $BUSYBOX --install -s /bin
+
+install_busybox_applet() {
+    do_or_freeze $BUSYBOX ln -sf /mnt/busybox "/bin/$1"
+}
+
+for applet in \
+    sh ash cat chmod cp date dd dirname basename grep ln mkdir mknod mount \
+    mv rm sleep uname wc wget base64 vi test true false kill
+do
+    install_busybox_applet "$applet"
+done
+do_or_freeze $BUSYBOX ln -sf /mnt/busybox /bin/[
 
 export PATH="/bin"
 
@@ -74,7 +85,7 @@ mkdir -p /etc/ssl
 ln -sf /mnt1/etc/ssl/cert.pem /etc/ssl/cert.pem
 ln -sf /mnt1/etc/ssl/certs /etc/ssl/certs
 
-# Make wrappers available
+# Make bundled user programs available
 chmod +x /mnt/git /mnt/vim /mnt/gcc /mnt/rustc /mnt/lswrap /mnt/curl 2>/dev/null || true
 chmod +x /mnt/all_test.sh /mnt/git_test.sh /mnt/vim_test.sh /mnt/gcc_test.sh /mnt/rst_test.sh 2>/dev/null || true
 
@@ -90,14 +101,10 @@ chmod +x /bin/git
 cp /mnt/curl /bin/curl
 chmod +x /bin/curl
 
-# Create gcc wrapper (symlink shebang has issues on DLUTos)
-cat > /bin/gcc <<'GCCEOF'
-#!/bin/sh
-exec sh /mnt/gcc "$@"
-GCCEOF
-chmod +x /bin/gcc
 cp /mnt/vim /bin/vim
 chmod +x /bin/vim
+cp /mnt/gcc /bin/gcc
+chmod +x /bin/gcc
 cp /mnt/rustc /bin/rustc
 chmod +x /bin/rustc
 export PATH="/bin:/usr/bin:$PATH"
@@ -108,6 +115,16 @@ cat > /etc/resolv.conf <<EOF
 nameserver 10.0.2.3
 nameserver 8.8.8.8
 EOF
+
+if [ -f /mnt/githosts ]; then
+    cp /mnt/githosts /etc/hosts
+else
+    cat > /etc/hosts <<EOF
+127.0.0.1 localhost
+198.18.0.61 api.github.com
+198.18.0.61 github.com
+EOF
+fi
 
 # ---- Git 环境配置 (第一题) ----
 mkdir -p /root/.ssh

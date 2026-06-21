@@ -45,6 +45,13 @@ assert() {
     fi
 }
 
+contains() {
+    case "$1" in
+        *"$2"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 print_header() {
     echo ""
     echo "============================================================"
@@ -208,22 +215,35 @@ EOF
     echo ""
     echo "--- git log ---"
 
-    local log_out
+    local log_out line commit_count has_first has_second
     log_out=$(cd "$REPO" && git log --oneline 2>&1) || true
 
     echo "  git log output:"
-    echo "$log_out" | while read line; do echo "    $line"; done
+    commit_count=0
+    has_first=0
+    has_second=0
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        echo "    $line"
+        commit_count=$((commit_count + 1))
+        case "$line" in
+            *"add README"*) has_first=1 ;;
+        esac
+        case "$line" in
+            *"update README"*) has_second=1 ;;
+        esac
+    done <<EOF
+$log_out
+EOF
 
-    local commit_count
-    commit_count=$(echo "$log_out" | wc -l)
     assert "git log shows at least 2 commits" \
         test "$commit_count" -ge 2
 
     assert "git log contains first commit" \
-        sh -c "echo \"$log_out\" | grep -q 'add README'"
+        test "$has_first" -eq 1
 
     assert "git log contains second commit" \
-        sh -c "echo \"$log_out\" | grep -q 'update README'"
+        test "$has_second" -eq 1
 
     cd /root
 }

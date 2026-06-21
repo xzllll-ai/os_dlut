@@ -57,24 +57,24 @@ printf '#include <stdio.h>\nint main() {\n    printf("hello vim\\n");\n    retur
 vim hello.c
 cat hello.c
 
-sh /mnt/gcc --help
-sh /mnt/gcc -v
+gcc --help
+gcc -v
 cd /root
 rm -f hello.c a.out myhello
 printf '#include <stdio.h>\nint main(void) {\n    printf("Hello, World!\\n");\n    return 0;\n}\n' > hello.c
-sh /mnt/gcc hello.c
+gcc hello.c
 ./a.out
-sh /mnt/gcc -o myhello hello.c
+gcc -o myhello hello.c
 ./myhello
 
-sh /mnt/rustc --help
-sh /mnt/rustc -v
+rustc --help
+rustc --version
 cd /root
 rm -f hello.rs helloworld myrust
 printf 'fn main() {\n    println!("Hello, World!");\n}\n' > hello.rs
-sh /mnt/rustc hello.rs
+rustc hello.rs -o helloworld
 ./helloworld
-sh /mnt/rustc -o myrust hello.rs
+rustc -o myrust hello.rs
 ./myrust
 ```
 

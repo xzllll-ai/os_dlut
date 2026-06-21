@@ -1,6 +1,6 @@
 use super::FromSyscallArg;
 use crate::fs::shm::{gen_shm_id, ShmFlags, IPC_PRIVATE, SHM_MANAGER};
-use crate::kernel::constants::{EBADF, EEXIST, EINVAL, ENOENT, ENOMEM};
+use crate::kernel::constants::{EBADF, EEXIST, EFAULT, EINVAL, ENOENT, ENOMEM};
 use crate::kernel::mem::FileMapping;
 use crate::kernel::task::Thread;
 use crate::kernel::vfs::filearray::FD;
@@ -180,11 +180,11 @@ async fn mremap(
     mm_list
         .read_bytes(old_addr, &mut probe)
         .await
-        .map_err(|_| ENOMEM)?;
+        .map_err(|_| EFAULT)?;
     mm_list
         .read_bytes(old_addr + old_size - 1, &mut probe)
         .await
-        .map_err(|_| ENOMEM)?;
+        .map_err(|_| EFAULT)?;
 
     if new_size == old_size {
         return Ok(old_addr.addr());

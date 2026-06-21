@@ -155,11 +155,16 @@ impl PageCache {
                     offset += read_size;
                 }
                 None => {
-                    let mut new_page = CachePage::new();
+                    let mut new_page = CachePage::new_zeroed();
+                    let page_start = offset.align_down(PAGE_SIZE);
+                    let valid_size = size.saturating_sub(page_start).min(PAGE_SIZE);
                     self.backend
                         .upgrade()
                         .unwrap()
-                        .read_page(&mut new_page, offset.align_down(PAGE_SIZE))?;
+                        .read_page(&mut new_page, page_start)?;
+                    if new_page.valid_size() < valid_size {
+                        new_page.set_valid_size(valid_size);
+                    }
                     pages.insert(page_id, new_page);
                 }
             }
@@ -194,18 +199,22 @@ impl PageCache {
                         page.set_valid_size(cursor_end);
                     }
                     page.set_dirty();
-                    offset += PAGE_SIZE - inner_offset;
+                    offset += cursor_end - inner_offset;
                 }
                 None => {
-                    let new_page = if (offset >> PAGE_SIZE_BITS) > (old_size >> PAGE_SIZE_BITS) {
-                        let new_page = CachePage::new_zeroed();
-                        new_page
+                    let new_page = if offset >= old_size {
+                        CachePage::new_zeroed()
                     } else {
-                        let mut new_page = CachePage::new();
+                        let mut new_page = CachePage::new_zeroed();
+                        let page_start = offset.align_down(PAGE_SIZE);
+                        let valid_size = old_size.saturating_sub(page_start).min(PAGE_SIZE);
                         self.backend
                             .upgrade()
                             .unwrap()
-                            .read_page(&mut new_page, offset.align_down(PAGE_SIZE))?;
+                            .read_page(&mut new_page, page_start)?;
+                        if new_page.valid_size() < valid_size {
+                            new_page.set_valid_size(valid_size);
+                        }
                         new_page
                     };
 
@@ -244,21 +253,15 @@ impl PageCache {
                 pages.remove(&page_id);
             }
         } else if new_size > old_size {
-            let begin = old_size.align_down(PAGE_SIZE) >> PAGE_SIZE_BITS;
-            let end = new_size.align_up(PAGE_SIZE) >> PAGE_SIZE_BITS;
-
-            pages.remove(&begin);
-
-            for page_id in begin..end {
-                let mut new_page = CachePage::new_zeroed();
-
-                if page_id != end - 1 {
-                    new_page.set_valid_size(PAGE_SIZE);
-                } else {
-                    new_page.set_valid_size(new_size % PAGE_SIZE);
+            let page_id = old_size.align_down(PAGE_SIZE) >> PAGE_SIZE_BITS;
+            if let Some(page) = pages.get_mut(&page_id) {
+                let page_start = page_id << PAGE_SIZE_BITS;
+                let valid_size = (new_size - page_start).min(PAGE_SIZE);
+                let old_valid_size = page.valid_size();
+                if old_valid_size < valid_size {
+                    page.all_mut()[old_valid_size..valid_size].fill(0);
+                    page.set_valid_size(valid_size);
                 }
-                new_page.set_dirty();
-                pages.insert(page_id, new_page);
             }
         }
 
@@ -282,11 +285,15 @@ impl PageCache {
         let raw_page_ptr = match pages.get(&page_id) {
             Some(CachePage(raw_page_ptr)) => *raw_page_ptr,
             None => {
-                let mut new_page = CachePage::new();
+                let mut new_page = CachePage::new_zeroed();
+                let valid_size = size.saturating_sub(offset_aligin).min(PAGE_SIZE);
                 self.backend
                     .upgrade()
                     .unwrap()
                     .read_page(&mut new_page, offset_aligin)?;
+                if new_page.valid_size() < valid_size {
+                    new_page.set_valid_size(valid_size);
+                }
                 pages.insert(page_id, new_page);
                 new_page.0
             }
@@ -298,6 +305,7 @@ impl PageCache {
             Ok(Some(func(&page, &CachePage(raw_page_ptr))))
         }
     }
+
 }
 
 pub struct CachePageStream {

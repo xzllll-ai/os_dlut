@@ -9,6 +9,8 @@ pub const TCSETSF: u32 = 0x5404;
 pub const TIOCGPGRP: u32 = 0x540f;
 pub const TIOCSPGRP: u32 = 0x5410;
 pub const TIOCGWINSZ: u32 = 0x5413;
+pub const FIOCLEX: u32 = 0x5451;
+pub const FIONBIO: u32 = 0x5421;
 
 pub const PR_SET_NAME: u32 = 15;
 pub const PR_GET_NAME: u32 = 16;
@@ -106,6 +108,8 @@ bitflags! {
         const MAP_PRIVATE = 0x02;
         const MAP_FIXED = 0x10;
         const MAP_ANONYMOUS = 0x20;
+        const MAP_GROWSDOWN = 0x100;
+        const MAP_STACK = 0x20000;
     }
 
     #[derive(Debug, Clone, Copy)]

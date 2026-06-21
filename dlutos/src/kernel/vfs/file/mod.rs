@@ -21,7 +21,7 @@ use core::{
     sync::atomic::{AtomicI32, AtomicU32, Ordering},
 };
 use dlutos_sync::Mutex;
-use pipe::{PipeReadEnd, PipeWriteEnd};
+use pipe::{PipeReadEnd, PipeWriteEnd, SocketPairEnd};
 use posix_types::open::OpenFlags;
 
 pub use event_file::EventFile;
@@ -33,6 +33,7 @@ pub enum FileType {
     Inode(InodeFile),
     PipeRead(PipeReadEnd),
     PipeWrite(PipeWriteEnd),
+    SocketPair(SocketPairEnd),
     Terminal(TerminalFile),
     CharDev(Arc<CharDevice>),
     Socket(Arc<dyn Socket>),
@@ -67,6 +68,7 @@ impl FileType {
         match self {
             FileType::Inode(inode) => inode.read(buffer, offset).await,
             FileType::PipeRead(pipe) => pipe.read(buffer).await,
+            FileType::SocketPair(socketpair) => socketpair.read(buffer).await,
             FileType::Terminal(tty) => tty.read(buffer).await,
             FileType::CharDev(device) => device.read(buffer),
             FileType::Socket(socket) => socket.recv(buffer).await.map(|res| res.0),
@@ -94,6 +96,7 @@ impl FileType {
         match self {
             FileType::Inode(inode) => inode.write(stream, offset).await,
             FileType::PipeWrite(pipe) => pipe.write(stream).await,
+            FileType::SocketPair(socketpair) => socketpair.write(stream).await,
             FileType::Terminal(tty) => tty.write(stream),
             FileType::CharDev(device) => device.write(stream),
             FileType::Socket(socket) => socket.send(stream, SendMetadata::default()).await,
@@ -154,6 +157,7 @@ impl FileType {
             FileType::Terminal(tty) => tty.poll(event).await,
             FileType::PipeRead(pipe) => pipe.poll(event).await,
             FileType::PipeWrite(pipe) => pipe.poll(event).await,
+            FileType::SocketPair(socketpair) => socketpair.poll(event).await,
             FileType::Socket(socket) => socket.poll(event).await,
             _ => unimplemented!("Poll event not supported."),
         }
@@ -164,6 +168,7 @@ impl FileType {
             FileType::Inode(_) => Ok(event),
             FileType::PipeRead(pipe) => pipe.poll_ready(event),
             FileType::PipeWrite(pipe) => pipe.poll_ready(event),
+            FileType::SocketPair(socketpair) => socketpair.poll_ready(event),
             FileType::Socket(socket) => socket.poll_ready(event),
             _ => Ok(PollEvent::empty()),
         }
@@ -242,6 +247,7 @@ impl File {
         match &self.0.file_type {
             FileType::PipeRead(pipe) => pipe.close().await,
             FileType::PipeWrite(pipe) => pipe.close().await,
+            FileType::SocketPair(socketpair) => socketpair.close().await,
             _ => {}
         }
     }
@@ -251,6 +257,10 @@ impl File {
             FileType::Socket(socket) => Ok(Some(socket.clone())),
             _ => Ok(None),
         }
+    }
+
+    pub fn is_socketpair(&self) -> bool {
+        matches!(&self.0.file_type, FileType::SocketPair(_))
     }
 
     pub fn poll_ready(&self, event: PollEvent) -> KResult<PollEvent> {

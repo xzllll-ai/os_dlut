@@ -103,6 +103,10 @@ impl TrapContext {
     pub const OFFSET_SCAUSE: usize = offset_of!(TrapContext, scause);
     pub const OFFSET_STVAL: usize = offset_of!(TrapContext, stval);
 
+    pub fn set_thread_pointer(&mut self, tp: u64) {
+        self.regs.tp = tp;
+    }
+
     fn syscall_no(&self) -> usize {
         self.regs.a7 as usize
     }

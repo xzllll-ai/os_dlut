@@ -44,7 +44,6 @@ pub struct UserPointerMut<'a, T: Copy> {
 
 pub struct UserStream<'a> {
     pointer: CheckedUserPointer<'a>,
-    cur: usize,
 }
 
 impl<T: Copy> UserPointer<'_, T> {
@@ -354,11 +353,11 @@ impl UserStream<'_> {
     }
 
     pub fn remaining(&self) -> usize {
-        self.pointer.len - self.cur
+        self.pointer.len
     }
 
     pub fn is_drained(&self) -> bool {
-        self.cur >= self.pointer.len
+        self.pointer.len == 0
     }
 }
 
@@ -370,27 +369,25 @@ impl Stream for UserStream<'_> {
     fn poll_data<'a>(&mut self, buf: &'a mut [u8]) -> KResult<Option<&'a mut [u8]>> {
         assert_preempt_enabled!("UserStream::poll_data");
 
-        if self.cur >= self.pointer.len {
+        if self.pointer.len == 0 {
             return Ok(None);
         }
 
-        let to_read = buf.len().min(self.pointer.len - self.cur);
+        let to_read = buf.len().min(self.pointer.len);
 
         self.pointer.read(buf.as_mut_ptr() as *mut (), to_read)?;
 
         self.pointer.forward(to_read);
-        self.cur += to_read;
         Ok(Some(&mut buf[..to_read]))
     }
 
     fn ignore(&mut self, len: usize) -> KResult<Option<usize>> {
-        if self.cur >= self.pointer.len {
+        if self.pointer.len == 0 {
             return Ok(None);
         }
-        let to_ignore = len.min(self.pointer.len - self.cur);
+        let to_ignore = len.min(self.pointer.len);
 
         self.pointer.forward(to_ignore);
-        self.cur += to_ignore;
         Ok(Some(to_ignore))
     }
 }
@@ -401,7 +398,6 @@ impl<'a> IntoStream for CheckedUserPointer<'a> {
     fn into_stream(self) -> Self::Stream {
         UserStream {
             pointer: self,
-            cur: 0,
         }
     }
 }

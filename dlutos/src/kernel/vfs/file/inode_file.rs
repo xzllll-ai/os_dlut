@@ -230,7 +230,7 @@ impl File {
                 buffer.stx_mode = (S_IFCHR | 0o666) as u16;
                 Ok(())
             }
-            FileType::Socket(_) => {
+            FileType::Socket(_) | FileType::SocketPair(_) => {
                 buffer.stx_mask = mask;
                 buffer.stx_blksize = 4096;
                 buffer.stx_nlink = 1;

@@ -493,8 +493,12 @@ impl FileInode {
 }
 
 impl PageCacheBackend for FileInode {
-    fn read_page(&self, _cache_page: &mut CachePage, _offset: usize) -> KResult<usize> {
-        Ok(PAGE_SIZE)
+    fn read_page(&self, cache_page: &mut CachePage, offset: usize) -> KResult<usize> {
+        let size = self.size();
+        let valid_size = size.saturating_sub(offset).min(PAGE_SIZE);
+        cache_page.all_mut().fill(0);
+        cache_page.set_valid_size(valid_size);
+        Ok(valid_size)
     }
 
     fn write_page(&self, _page: &mut CachePageStream, _offset: usize) -> KResult<usize> {
@@ -540,7 +544,8 @@ impl Inode for FileInode {
 
         // SAFETY: `lock` has done the synchronization
         *self.mtime.lock() = Instant::now();
-        self.size.store(cursor_end as u64, Ordering::Relaxed);
+        self.size
+            .fetch_max(cursor_end as u64, Ordering::Relaxed);
 
         Ok(wrote)
     }

@@ -11,6 +11,8 @@ use crate::{
 use alloc::{
     collections::btree_map::BTreeMap,
     sync::{Arc, Weak},
+    vec,
+    vec::Vec,
 };
 use dlutos_mm::address::Addr;
 use dlutos_sync::{AsProof as _, AsProofMut as _, RwLock};
@@ -125,28 +127,35 @@ impl ProcessList {
 
         let inner = process.inner.access_mut(self.prove_mut());
 
-        thread.dead.store(true, Ordering::SeqCst);
+        let exiting_tids = if is_exiting_group {
+            inner.threads.keys().copied().collect::<Vec<_>>()
+        } else {
+            vec![thread.tid]
+        };
 
-        if is_exiting_group {
-            // TODO: Send SIGKILL to all threads.
-            // todo!()
-        }
+        for tid in &exiting_tids {
+            let Some(exiting_thread) = self.threads.get(tid).cloned() else {
+                continue;
+            };
 
-        if let Some(clear_ctid) = thread.get_clear_ctid() {
-            let _ = UserPointerMut::new(clear_ctid).unwrap().write(0u32);
+            exiting_thread.dead.store(true, Ordering::SeqCst);
 
-            let _ = futex_wake(clear_ctid.addr(), Some(process.pid), 1).await;
-            let _ = futex_wake(clear_ctid.addr(), None, 1).await;
-        }
+            if let Some(clear_ctid) = exiting_thread.get_clear_ctid() {
+                let _ = UserPointerMut::new(clear_ctid).unwrap().write(0u32);
 
-        if let Some(robust_list) = thread.get_robust_list() {
-            let _ = robust_list.wake_all().await;
+                let _ = futex_wake(clear_ctid.addr(), Some(process.pid), 1).await;
+                let _ = futex_wake(clear_ctid.addr(), None, 1).await;
+            }
+
+            if let Some(robust_list) = exiting_thread.get_robust_list() {
+                let _ = robust_list.wake_all().await;
+            }
         }
 
         let _ = futex_wake_process(process.pid).await;
 
         // main thread exit
-        if inner.threads.len() == 1 {
+        if is_exiting_group || inner.threads.len() == 1 {
             thread.files.close_all().await;
 
             // If we are the session leader, we should drop the control terminal.
@@ -194,6 +203,14 @@ impl ProcessList {
             );
         }
 
-        inner.threads.remove(&thread.tid);
+        for tid in exiting_tids {
+            inner.threads.remove(&tid);
+
+            // Keep the thread-group leader as the zombie process handle until
+            // the parent consumes it with wait4()/waitid().
+            if tid != process.pid {
+                self.threads.remove(&tid);
+            }
+        }
     }
 }

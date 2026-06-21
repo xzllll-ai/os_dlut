@@ -24,7 +24,7 @@ use core::{
 };
 use dlutos_hal::{
     fpu::FpuState,
-    processor::{UserTLS, CPU},
+    processor::UserTLS,
     traits::{
         fault::Fault,
         fpu::RawFpuState as _,
@@ -74,6 +74,7 @@ struct ThreadInner {
     clear_child_tid: Option<UserMut<u32>>,
 
     robust_list_address: Option<User<RobustListHead>>,
+    signal_stack: SignalStack,
 }
 
 pub struct Thread {
@@ -91,6 +92,18 @@ pub struct Thread {
     pub dead: AtomicBool,
 
     inner: Spin<ThreadInner>,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SignalStack {
+    pub ss_sp: usize,
+    pub ss_flags: i32,
+    pub ss_size: usize,
+}
+
+impl SignalStack {
+    pub const SS_DISABLE: i32 = 2;
 }
 
 impl ThreadBuilder {
@@ -192,6 +205,10 @@ impl ThreadBuilder {
             trap_ctx.set_stack_pointer(sp.get());
         }
 
+        if let Some(UserTLS::Base(base)) = &clone_args.tls {
+            trap_ctx.set_thread_pointer(*base);
+        }
+
         let fs_context = if clone_args.flags.contains(CloneFlags::CLONE_FS) {
             FsContext::new_shared(&thread.fs_context)
         } else {
@@ -251,6 +268,10 @@ impl ThreadBuilder {
                 set_child_tid: self.set_child_tid,
                 clear_child_tid: self.clear_child_tid,
                 robust_list_address: None,
+                signal_stack: SignalStack {
+                    ss_flags: SignalStack::SS_DISABLE,
+                    ..SignalStack::default()
+                },
             }),
         });
 
@@ -272,15 +293,6 @@ impl Thread {
 
     pub fn raise(&self, signal: Signal) -> RaiseResult {
         self.signal_list.raise(signal)
-    }
-
-    /// # Safety
-    /// This function is unsafe because it accesses the `current_cpu()`, which needs
-    /// to be called in a preemption disabled context.
-    pub unsafe fn load_thread_area32(&self) {
-        if let Some(tls) = self.inner.lock().tls.as_ref() {
-            CPU::local().as_mut().set_tls32(tls);
-        }
     }
 
     pub fn set_user_tls(&self, tls: UserTLS) -> KResult<()> {
@@ -317,6 +329,14 @@ impl Thread {
 
     pub fn get_clear_ctid(&self) -> Option<UserMut<u32>> {
         self.inner.lock().clear_child_tid
+    }
+
+    pub fn signal_stack(&self) -> SignalStack {
+        self.inner.lock().signal_stack
+    }
+
+    pub fn set_signal_stack(&self, signal_stack: SignalStack) {
+        self.inner.lock().signal_stack = signal_stack;
     }
 
     pub async fn handle_syscall(
@@ -439,15 +459,6 @@ impl Thread {
             self.process.mm_list.activate();
 
             CURRENT_THREAD.set(NonNull::new(&raw const *self as *mut _));
-
-            unsafe {
-                dlutos_preempt::disable();
-
-                // SAFETY: Preemption is disabled.
-                self.load_thread_area32();
-
-                dlutos_preempt::enable();
-            }
 
             let result = future.as_mut().poll(cx);
 

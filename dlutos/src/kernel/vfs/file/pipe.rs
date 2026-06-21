@@ -32,6 +32,11 @@ pub struct PipeWriteEnd {
     pipe: Arc<Pipe>,
 }
 
+pub struct SocketPairEnd {
+    read_end: PipeReadEnd,
+    write_end: PipeWriteEnd,
+}
+
 fn send_sigpipe_to_current() {
     let current = Thread::current();
     current.raise(Signal::SIGPIPE);
@@ -40,9 +45,7 @@ fn send_sigpipe_to_current() {
 impl Pipe {
     const PIPE_SIZE: usize = 4096;
 
-    /// # Return
-    /// `(read_end, write_end)`
-    pub fn new(flags: OpenFlags) -> (File, File) {
+    fn ends() -> (PipeReadEnd, PipeWriteEnd) {
         let pipe = Arc::new(Self {
             inner: Mutex::new(PipeInner {
                 buffer: VecDeque::with_capacity(Self::PIPE_SIZE),
@@ -53,21 +56,47 @@ impl Pipe {
             cv_write: CondVar::new(),
         });
 
+        (
+            PipeReadEnd { pipe: pipe.clone() },
+            PipeWriteEnd { pipe },
+        )
+    }
+
+    /// # Return
+    /// `(read_end, write_end)`
+    pub fn new(flags: OpenFlags) -> (File, File) {
         let read_flags = flags.difference(OpenFlags::O_WRONLY | OpenFlags::O_RDWR);
         let mut write_flags = read_flags;
         write_flags.insert(OpenFlags::O_WRONLY);
 
-        let read_pipe = pipe.clone();
-        let write_pipe = pipe;
+        let (read_pipe, write_pipe) = Self::ends();
+
+        (
+            File::new(read_flags, FileType::PipeRead(read_pipe)),
+            File::new(write_flags, FileType::PipeWrite(write_pipe)),
+        )
+    }
+
+    /// # Return
+    /// `(left, right)` where each endpoint is readable and writable.
+    pub fn socketpair(flags: OpenFlags) -> (File, File) {
+        let (left_read, right_write) = Self::ends();
+        let (right_read, left_write) = Self::ends();
 
         (
             File::new(
-                read_flags,
-                FileType::PipeRead(PipeReadEnd { pipe: read_pipe }),
+                flags | OpenFlags::O_RDWR,
+                FileType::SocketPair(SocketPairEnd {
+                    read_end: left_read,
+                    write_end: left_write,
+                }),
             ),
             File::new(
-                write_flags,
-                FileType::PipeWrite(PipeWriteEnd { pipe: write_pipe }),
+                flags | OpenFlags::O_RDWR,
+                FileType::SocketPair(SocketPairEnd {
+                    read_end: right_read,
+                    write_end: right_write,
+                }),
             ),
         )
     }
@@ -239,6 +268,45 @@ impl PipeWriteEnd {
 
         inner.write_closed = true;
         self.pipe.cv_read.notify_all();
+    }
+}
+
+impl SocketPairEnd {
+    pub async fn read(&self, buffer: &mut dyn Buffer) -> KResult<usize> {
+        self.read_end.read(buffer).await
+    }
+
+    pub async fn write(&self, stream: &mut dyn Stream) -> KResult<usize> {
+        self.write_end.write(stream).await
+    }
+
+    pub async fn poll(&self, event: PollEvent) -> KResult<PollEvent> {
+        let ready = self.poll_ready(event)?;
+        if !ready.is_empty() {
+            return Ok(ready);
+        }
+
+        if event.contains(PollEvent::Readable) {
+            return self.read_end.poll(PollEvent::Readable).await;
+        }
+
+        self.write_end.poll(PollEvent::Writable).await
+    }
+
+    pub fn poll_ready(&self, event: PollEvent) -> KResult<PollEvent> {
+        let mut ready = PollEvent::empty();
+        if event.contains(PollEvent::Readable) {
+            ready |= self.read_end.poll_ready(PollEvent::Readable)?;
+        }
+        if event.contains(PollEvent::Writable) {
+            ready |= self.write_end.poll_ready(PollEvent::Writable)?;
+        }
+        Ok(ready)
+    }
+
+    pub async fn close(&self) {
+        self.read_end.close().await;
+        self.write_end.close().await;
     }
 }
 

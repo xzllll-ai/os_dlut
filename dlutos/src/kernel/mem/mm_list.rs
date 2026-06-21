@@ -113,6 +113,22 @@ impl MMListLocked {
 }
 
 impl MMListInner {
+    fn take_page_to_free(pte: &mut impl PTE) -> Option<Page> {
+        let (pfn, attr) = pte.take();
+        let attr = attr.as_page_attr()?;
+
+        if !attr.contains(PageAttribute::PRESENT)
+            || attr.contains(PageAttribute::MAPPED | PageAttribute::GLOBAL)
+        {
+            return None;
+        }
+
+        Some(unsafe {
+            // SAFETY: Present anonymous user pages are owned by this MMList.
+            Page::from_raw(pfn)
+        })
+    }
+
     async fn unmap(&self, start: VAddr, len: usize) -> KResult<Vec<Page>> {
         assert_eq!(start.floor(), start);
         let end = (start + len).ceil();
@@ -126,8 +142,6 @@ impl MMListInner {
 
         let mut pages_to_free = Vec::new();
 
-        // TODO: Write back dirty pages.
-
         let mut locked = self.locked.lock().await;
 
         locked.areas.retain(|area| {
@@ -136,11 +150,20 @@ impl MMListInner {
             };
 
             for pte in self.page_table.iter_user(mid) {
-                let (pfn, _) = pte.take();
-                pages_to_free.push(unsafe {
-                    // SAFETY: We got the pfn from a valid page table entry, so it should be valid.
-                    Page::from_raw(pfn)
-                });
+                if area.is_shared {
+                    let (pfn, attr) = pte.take();
+                    let Some(attr) = attr.as_page_attr() else {
+                        continue;
+                    };
+                    if !attr.contains(PageAttribute::PRESENT)
+                        || attr.contains(PageAttribute::MAPPED | PageAttribute::GLOBAL)
+                    {
+                        continue;
+                    }
+                    drop(unsafe { Page::from_raw(pfn) });
+                } else if let Some(page) = Self::take_page_to_free(pte) {
+                    pages_to_free.push(page);
+                }
             }
 
             match (left, right) {
@@ -188,6 +211,38 @@ impl MMListInner {
         }
 
         Ok(pages_to_free)
+    }
+
+    async fn sync_shared(&self, start: VAddr, len: usize) -> KResult<()> {
+        assert_eq!(start.floor(), start);
+        let end = (start + len).ceil();
+        let range_to_sync = VRange::new(start, end);
+        if !range_to_sync.is_user() {
+            return Err(EINVAL);
+        }
+
+        let locked = self.locked.lock().await;
+        let mut shared_files = Vec::new();
+
+        for area in locked.areas.overlapping_range(range_to_sync) {
+            if !area.is_shared {
+                continue;
+            }
+
+            if let Mapping::File(file_mapping) = &area.mapping {
+                shared_files.push(file_mapping.file.clone());
+            }
+        }
+
+        drop(locked);
+
+        for file in shared_files {
+            if let Some(page_cache) = file.page_cache() {
+                page_cache.fsync().await?;
+            }
+        }
+
+        Ok(())
     }
 
     async fn protect(&self, start: VAddr, len: usize, permission: Permission) -> KResult<()> {
@@ -309,7 +364,16 @@ impl Drop for MMListInner {
         for area in &locked.areas {
             if area.is_shared {
                 for pte in self.page_table.iter_user(area.range()) {
-                    let (pfn, _) = pte.take();
+                    let (pfn, attr) = pte.take();
+                    let Some(attr) = attr.as_page_attr() else {
+                        continue;
+                    };
+                    if !attr.contains(PageAttribute::PRESENT)
+                        || attr.contains(PageAttribute::MAPPED | PageAttribute::GLOBAL)
+                    {
+                        continue;
+                    }
+
                     let raw_page = RawPagePtr::from(pfn);
                     if raw_page.refcount().fetch_sub(1, Ordering::Relaxed) == 1 {
                         // Wrong here
@@ -318,8 +382,7 @@ impl Drop for MMListInner {
                 }
             } else {
                 for pte in self.page_table.iter_user(area.range()) {
-                    let (pfn, _) = pte.take();
-                    unsafe { Page::from_raw(pfn) };
+                    Self::take_page_to_free(pte);
                 }
             }
         }
@@ -478,6 +541,10 @@ impl MMList {
         drop(pages_to_free);
 
         Ok(())
+    }
+
+    pub async fn sync_shared(&self, start: VAddr, len: usize) -> KResult<()> {
+        self.inner.borrow().sync_shared(start, len).await
     }
 
     pub async fn protect(&self, start: VAddr, len: usize, prot: Permission) -> KResult<()> {
@@ -691,8 +758,8 @@ impl MMList {
                     Page::with_raw(pte.get_pfn(), |page| {
                         let page_data = page.as_memblk().as_bytes();
                         let data = &page_data[start_offset..end_offset];
-                        buffer[copied + idx * 0x1000..copied + idx * 0x1000 + data.len()]
-                            .copy_from_slice(data);
+                        let data_offset = copied + (page_start + start_offset - current);
+                        buffer[data_offset..data_offset + data.len()].copy_from_slice(data);
                     });
                 }
             }
@@ -764,8 +831,9 @@ impl MMList {
                     Page::with_raw(pte.get_pfn(), |page| {
                         // SAFETY: The caller guarantees that no one else is using the page.
                         let page_data = page.as_memblk().as_bytes_mut();
+                        let data_offset = offset + (page_start + start_offset - current);
                         func(
-                            offset + idx * 0x1000,
+                            data_offset,
                             &mut page_data[start_offset..end_offset],
                         );
                     });

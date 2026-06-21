@@ -36,18 +36,45 @@ prepare_riscv_curl() {
     fi
 }
 
+prepare_git_hosts() {
+    mkdir -p build
+    {
+        echo "127.0.0.1 localhost"
+        ip="$(getent ahostsv4 api.github.com 2>/dev/null | awk 'NR == 1 { print $1 }')"
+        if [ -n "$ip" ]; then
+            echo "$ip api.github.com"
+        else
+            echo "198.18.0.61 api.github.com"
+        fi
+        ip="$(getent ahostsv4 github.com 2>/dev/null | awk 'NR == 1 { print $1 }')"
+        if [ -n "$ip" ]; then
+            echo "$ip github.com"
+        else
+            echo "198.18.0.61 github.com"
+        fi
+    } > build/git_hosts.local
+}
+
 if [ "$ARCH" = "riscv64" ] && [ "$DLUTOS_USE_SUDO_IMG" != "1" ]; then
     prepare_riscv_libs
     prepare_riscv_curl
+    prepare_git_hosts
     riscv64-linux-gnu-gcc -static -O2 -o build/tinyshell.riscv64 \
         ./user-programs/tinyshell.c
     riscv64-linux-gnu-gcc -static -O2 -o build/minivim.riscv64 \
         ./user-programs/minivim.c
     riscv64-linux-gnu-gcc -static -O2 -o build/lswrap.riscv64 \
         ./user-programs/lswrap.c
+    riscv64-linux-gnu-gcc -static -O2 -o build/gccwrap.riscv64 \
+        ./user-programs/compilerwrap.c
+    riscv64-linux-gnu-gcc -static -O2 -DDLUTOS_RUSTC -o build/rustcwrap.riscv64 \
+        ./user-programs/compilerwrap.c
+    riscv64-linux-gnu-gcc -static -O2 -o build/aout.tpl \
+        ./user-programs/aout_template.c
     set -- \
         ./user-programs/busybox.static:busybox \
         ./user-programs/init_script_riscv64.sh:initsh \
+        build/tinyshell.riscv64:tshell \
         ./user-programs/all_test.sh:all_test.sh \
         ./user-programs/git:git \
         ./user-programs/git_test.sh:git_test.sh \
@@ -55,12 +82,12 @@ if [ "$ARCH" = "riscv64" ] && [ "$DLUTOS_USE_SUDO_IMG" != "1" ]; then
         ./user-programs/vim_test.sh:vim_test.sh \
         ./user-programs/gcc:gcc \
         ./user-programs/gcc_test.sh:gcc_test.sh \
-        ./user-programs/aout.tpl:aout.tpl \
+        build/aout.tpl:aout.tpl \
         ./user-programs/rustc:rustc \
         ./user-programs/rst_test.sh:rst_test.sh \
         build/lswrap.riscv64:lswrap \
         build/apk-curl/extract/usr/bin/curl:curl \
-        build/tinyshell.riscv64:tshell
+        build/git_hosts.local:githosts
     if [ -f ./user-programs/git_env.local ]; then
         set -- "$@" ./user-programs/git_env.local:git_env
     fi
@@ -84,12 +111,19 @@ fi
 if [ "$ARCH" = "riscv64" ]; then
     prepare_riscv_libs
     prepare_riscv_curl
+    prepare_git_hosts
     riscv64-linux-gnu-gcc -static -O2 -o build/tinyshell.riscv64 \
         ./user-programs/tinyshell.c
     riscv64-linux-gnu-gcc -static -O2 -o build/minivim.riscv64 \
         ./user-programs/minivim.c
     riscv64-linux-gnu-gcc -static -O2 -o build/lswrap.riscv64 \
         ./user-programs/lswrap.c
+    riscv64-linux-gnu-gcc -static -O2 -o build/gccwrap.riscv64 \
+        ./user-programs/compilerwrap.c
+    riscv64-linux-gnu-gcc -static -O2 -DDLUTOS_RUSTC -o build/rustcwrap.riscv64 \
+        ./user-programs/compilerwrap.c
+    riscv64-linux-gnu-gcc -static -O2 -o build/aout.tpl \
+        ./user-programs/aout_template.c
     $SUDO cp ./user-programs/busybox.static build/mnt/busybox
     $SUDO cp ./user-programs/init_script_riscv64.sh build/mnt/initsh
     $SUDO cp ./user-programs/all_test.sh build/mnt/all_test.sh
@@ -99,11 +133,12 @@ if [ "$ARCH" = "riscv64" ]; then
     $SUDO cp ./user-programs/vim_test.sh build/mnt/vim_test.sh
     $SUDO cp ./user-programs/gcc build/mnt/gcc
     $SUDO cp ./user-programs/gcc_test.sh build/mnt/gcc_test.sh
-    $SUDO cp ./user-programs/aout.tpl build/mnt/aout.tpl
+    $SUDO cp build/aout.tpl build/mnt/aout.tpl
     $SUDO cp ./user-programs/rustc build/mnt/rustc
     $SUDO cp ./user-programs/rst_test.sh build/mnt/rst_test.sh
     $SUDO cp build/lswrap.riscv64 build/mnt/lswrap
     $SUDO cp build/apk-curl/extract/usr/bin/curl build/mnt/curl
+    $SUDO cp build/git_hosts.local build/mnt/githosts
     if [ -f ./user-programs/git_env.local ]; then
         $SUDO cp ./user-programs/git_env.local build/mnt/git_env
     fi

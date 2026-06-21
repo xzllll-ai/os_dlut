@@ -1,7 +1,7 @@
 use super::{FromSyscallArg, User};
-use crate::io::{ByteBuffer, IntoStream};
+use crate::io::{ByteBuffer, IntoStream, Stream};
 use crate::kernel::constants::{
-    EBADF, EFAULT, EINVAL, ENOENT, ENOTDIR, SEEK_CUR, SEEK_END, SEEK_SET,
+    EBADF, EFAULT, EINVAL, ENOENT, ENOTDIR, FIOCLEX, FIONBIO, SEEK_CUR, SEEK_END, SEEK_SET,
 };
 use crate::kernel::syscall::UserMut;
 use crate::kernel::task::Thread;
@@ -14,16 +14,21 @@ use crate::kernel::vfs::{PollEvent, SeekOption};
 use crate::{
     io::{Buffer, BufferFill},
     kernel::{
-        user::{CheckedUserPointer, UserBuffer, UserPointer, UserPointerMut, UserString},
+        user::{
+            CheckedUserPointer, UserBuffer, UserPointer, UserPointerMut, UserStream, UserString,
+        },
         vfs::dentry::Dentry,
     },
     path::Path,
     prelude::*,
 };
+use align_ext::AlignExt;
 use alloc::sync::Arc;
 use core::future::Future;
 use core::pin::Pin;
 use core::time::Duration;
+use dlutos_mm::address::{AddrOps as _, VAddr};
+use dlutos_mm::paging::PAGE_SIZE;
 use posix_types::ctypes::{Long, PtrT};
 use posix_types::namei::RenameFlags;
 use posix_types::open::{AtFlags, OpenFlags};
@@ -474,8 +479,109 @@ pub struct IoVec {
     pub len: Long,
 }
 
+struct IovStream<'a> {
+    streams: Vec<UserStream<'a>>,
+    current: usize,
+    total: usize,
+}
+
+impl<'a> IovStream<'a> {
+    fn new(streams: Vec<UserStream<'a>>) -> Self {
+        let total = streams.iter().map(UserStream::len).sum();
+        Self {
+            streams,
+            current: 0,
+            total,
+        }
+    }
+}
+
+impl Stream for IovStream<'_> {
+    fn total(&self) -> usize {
+        self.total
+    }
+
+    fn poll_data<'a>(&mut self, buf: &'a mut [u8]) -> KResult<Option<&'a mut [u8]>> {
+        let mut filled = 0;
+
+        while filled < buf.len() {
+            while self.current < self.streams.len() && self.streams[self.current].is_drained() {
+                self.current += 1;
+            }
+
+            if self.current >= self.streams.len() {
+                break;
+            }
+
+            let Some(data) = self.streams[self.current].poll_data(&mut buf[filled..])? else {
+                break;
+            };
+
+            if data.is_empty() {
+                break;
+            }
+
+            filled += data.len();
+
+            if self.streams[self.current].is_drained() {
+                self.current += 1;
+            }
+        }
+
+        if filled == 0 {
+            Ok(None)
+        } else {
+            Ok(Some(&mut buf[..filled]))
+        }
+    }
+
+    fn ignore(&mut self, len: usize) -> KResult<Option<usize>> {
+        let mut ignored = 0;
+
+        while ignored < len {
+            while self.current < self.streams.len() && self.streams[self.current].is_drained() {
+                self.current += 1;
+            }
+
+            if self.current >= self.streams.len() {
+                break;
+            }
+
+            let Some(nignored) = self.streams[self.current].ignore(len - ignored)? else {
+                break;
+            };
+
+            if nignored == 0 {
+                break;
+            }
+
+            ignored += nignored;
+
+            if self.streams[self.current].is_drained() {
+                self.current += 1;
+            }
+        }
+
+        if ignored == 0 {
+            Ok(None)
+        } else {
+            Ok(Some(ignored))
+        }
+    }
+}
+
 #[dlutos_macros::define_syscall(SYS_READV)]
 async fn readv(fd: FD, iov_user: User<IoVec>, iovcnt: u32) -> KResult<usize> {
+    do_readv(thread, fd, iov_user, iovcnt, None).await
+}
+
+async fn do_readv(
+    thread: &Thread,
+    fd: FD,
+    iov_user: User<IoVec>,
+    iovcnt: u32,
+    offset: Option<usize>,
+) -> KResult<usize> {
     let file = thread.files.get(fd).ok_or(EBADF)?;
 
     let mut iov_user = UserPointer::new(iov_user)?;
@@ -498,8 +604,9 @@ async fn readv(fd: FD, iov_user: User<IoVec>, iovcnt: u32) -> KResult<usize> {
 
     let mut tot = 0usize;
     for mut buffer in iov_buffers.into_iter() {
-        // TODO!!!: `readv`
-        let nread = file.read(&mut buffer, None).await?;
+        let nread = file
+            .read(&mut buffer, offset.map(|offset| offset + tot))
+            .await?;
         tot += nread;
 
         if nread != buffer.total() {
@@ -512,6 +619,16 @@ async fn readv(fd: FD, iov_user: User<IoVec>, iovcnt: u32) -> KResult<usize> {
 
 #[dlutos_macros::define_syscall(SYS_WRITEV)]
 async fn writev(fd: FD, iov_user: User<IoVec>, iovcnt: u32) -> KResult<usize> {
+    do_writev(thread, fd, iov_user, iovcnt, None).await
+}
+
+async fn do_writev(
+    thread: &Thread,
+    fd: FD,
+    iov_user: User<IoVec>,
+    iovcnt: u32,
+    offset: Option<usize>,
+) -> KResult<usize> {
     let file = thread.files.get(fd).ok_or(EBADF)?;
 
     let mut iov_user = UserPointer::new(iov_user)?;
@@ -533,17 +650,79 @@ async fn writev(fd: FD, iov_user: User<IoVec>, iovcnt: u32) -> KResult<usize> {
         })
         .collect::<KResult<Vec<_>>>()?;
 
-    let mut tot = 0usize;
-    for mut stream in iov_streams.into_iter() {
-        let nread = file.write(&mut stream, None).await?;
-        tot += nread;
+    let mut stream = IovStream::new(iov_streams);
+    file.write(&mut stream, offset).await
+}
 
-        if nread == 0 || !stream.is_drained() {
-            break;
-        }
+fn split_offset(offset_low: usize, offset_high: usize) -> KResult<usize> {
+    let offset = ((offset_high as u64) << 32) | offset_low as u64;
+    usize::try_from(offset).map_err(|_| EINVAL)
+}
+
+#[dlutos_macros::define_syscall(SYS_PREADV)]
+async fn preadv(
+    fd: FD,
+    iov_user: User<IoVec>,
+    iovcnt: u32,
+    offset_low: usize,
+    offset_high: usize,
+) -> KResult<usize> {
+    do_readv(
+        thread,
+        fd,
+        iov_user,
+        iovcnt,
+        Some(split_offset(offset_low, offset_high)?),
+    )
+    .await
+}
+
+#[dlutos_macros::define_syscall(SYS_PWRITEV)]
+async fn pwritev(
+    fd: FD,
+    iov_user: User<IoVec>,
+    iovcnt: u32,
+    offset_low: usize,
+    offset_high: usize,
+) -> KResult<usize> {
+    do_writev(
+        thread,
+        fd,
+        iov_user,
+        iovcnt,
+        Some(split_offset(offset_low, offset_high)?),
+    )
+    .await
+}
+
+#[dlutos_macros::define_syscall(SYS_PREADV2)]
+async fn preadv2(
+    fd: FD,
+    iov_user: User<IoVec>,
+    iovcnt: u32,
+    offset_low: usize,
+    offset_high: usize,
+    flags: u32,
+) -> KResult<usize> {
+    if flags != 0 {
+        return Err(EINVAL);
     }
+    sys_preadv(thread, fd, iov_user, iovcnt, offset_low, offset_high).await
+}
 
-    Ok(tot)
+#[dlutos_macros::define_syscall(SYS_PWRITEV2)]
+async fn pwritev2(
+    fd: FD,
+    iov_user: User<IoVec>,
+    iovcnt: u32,
+    offset_low: usize,
+    offset_high: usize,
+    flags: u32,
+) -> KResult<usize> {
+    if flags != 0 {
+        return Err(EINVAL);
+    }
+    sys_pwritev(thread, fd, iov_user, iovcnt, offset_low, offset_high).await
 }
 
 #[dlutos_macros::define_syscall(SYS_FACCESSAT)]
@@ -580,6 +759,19 @@ async fn sendfile64(out_fd: FD, in_fd: FD, offset: UserMut<u8>, count: usize) ->
 
 #[dlutos_macros::define_syscall(SYS_IOCTL)]
 async fn ioctl(fd: FD, request: usize, arg3: usize) -> KResult<usize> {
+    match request as u32 {
+        FIOCLEX => {
+            thread.files.set_cloexec(fd)?;
+            return Ok(0);
+        }
+        FIONBIO => {
+            let nonblock = UserPointer::<i32>::with_addr(arg3)?.read()? != 0;
+            thread.files.set_nonblock(fd, nonblock)?;
+            return Ok(0);
+        }
+        _ => {}
+    }
+
     let file = thread.files.get(fd).ok_or(EBADF)?;
 
     file.ioctl(request, arg3).await
@@ -926,8 +1118,31 @@ async fn renameat2(
 }
 
 #[dlutos_macros::define_syscall(SYS_MSYNC)]
-async fn msync(/* fill the actual args here */) {
-    // TODO
+async fn msync(addr: usize, len: usize, flags: u32) -> KResult<()> {
+    const MS_ASYNC: u32 = 1;
+    const MS_INVALIDATE: u32 = 2;
+    const MS_SYNC: u32 = 4;
+
+    if flags & !(MS_ASYNC | MS_INVALIDATE | MS_SYNC) != 0 {
+        return Err(EINVAL);
+    }
+    if flags & MS_ASYNC != 0 && flags & MS_SYNC != 0 {
+        return Err(EINVAL);
+    }
+
+    let addr = VAddr::from(addr);
+    if !addr.is_page_aligned() {
+        return Err(EINVAL);
+    }
+    if len == 0 {
+        return Ok(());
+    }
+
+    thread
+        .process
+        .mm_list
+        .sync_shared(addr, len.align_up(PAGE_SIZE))
+        .await
 }
 
 #[dlutos_macros::define_syscall(SYS_FALLOCATE)]

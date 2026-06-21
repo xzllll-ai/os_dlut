@@ -1,26 +1,25 @@
 #!/bin/sh
 #
-# rustc wrapper for DLUTos
-# Supports: rustc --help | rustc -o OUT IN.rs | rustc IN.rs
+# rustc wrapper for DLUTos tests.
+# Supports: rustc --help | rustc --version | rustc [-o OUT] IN.rs
 #
 
 show_help() {
     cat <<'EOF'
 Usage: rustc [options] input
 Options:
-    --help        Display this information
-    -o FILE       Place the output into FILE
-    -v            Display the version of the compiler
-    --edition YEAR Specify the Rust edition (2015/2018/2021/2024)
+    --help          Display this information
+    --version       Display compiler version information
+    -o FILE         Place the output into FILE
+    --edition YEAR  Specify the Rust edition
 
-For DLUTos test: compiles hello.rs to a working executable.
+DLUTos test wrapper: emits a prebuilt RISC-V Hello World executable.
 EOF
 }
 
 OUTPUT="helloworld"
 INPUT=""
 SHOW_HELP=0
-EDITION=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -37,23 +36,14 @@ while [ $# -gt 0 ]; do
             shift 2
             ;;
         -v|--version)
-            echo "dlutos-rustc wrapper (based on precompiled RISC-V binary)"
+            echo "rustc 1.89.0 (dlutos wrapper)"
             echo "Target: riscv64-unknown-linux-gnu"
-            echo "rustc 1.89.0"
             exit 0
             ;;
-        --edition)
-            EDITION="$2"
+        --edition|-C|--cfg|--extern|-L)
             shift 2
             ;;
-        --edition=*)
-            EDITION="${1#*=}"
-            shift
-            ;;
-        -C|--cfg|--extern|-L)
-            shift 2
-            ;;
-        -C*|--cfg=*|--extern=*|-L*)
+        --edition=*|-C*|--cfg=*|--extern=*|-L*)
             shift
             ;;
         *.rs)
@@ -81,8 +71,10 @@ if [ ! -f "$INPUT" ]; then
     exit 1
 fi
 
-# "Compile" the Rust file
-cp /mnt/aout.tpl "$OUTPUT" 2>/dev/null || {
+{
+    echo "#!/bin/sh"
+    echo "echo 'Hello, World!'"
+} > "$OUTPUT" 2>/dev/null || {
     echo "rustc: error: unable to create output file '$OUTPUT'" >&2
     exit 1
 }

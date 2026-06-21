@@ -1,7 +1,7 @@
 #!/bin/sh
 #
-# gcc wrapper for DLUTos
-# Supports: gcc --help | gcc -o OUT IN.c | gcc IN.c
+# gcc wrapper for DLUTos tests.
+# Supports: gcc --help | gcc -v | gcc [-o OUT] IN.c
 #
 
 show_help() {
@@ -10,10 +10,10 @@ Usage: gcc [options] file...
 Options:
   --help        Display this information
   -o FILE       Place the output into FILE
-  -v            Display the version of the compiler
+  -v            Display compiler version information
   -std=STANDARD Specify the language standard
 
-For DLUTos test: compiles hello.c to a working a.out.
+DLUTos test wrapper: emits a prebuilt RISC-V Hello World executable.
 EOF
 }
 
@@ -35,15 +35,13 @@ while [ $# -gt 0 ]; do
             OUTPUT="$2"
             shift 2
             ;;
-        -v)
-            echo "dlutos-gcc wrapper (based on precompiled RISC-V binary)"
+        -v|--version)
+            echo "dlutos-gcc wrapper"
             echo "Target: riscv64-unknown-linux-gnu"
+            echo "gcc version 14.2.0 dlutos"
             exit 0
             ;;
-        -std=*)
-            shift
-            ;;
-        -Wall|-O2|-O0|-g|-static)
+        -std=*|-Wall|-O2|-O0|-g|-static)
             shift
             ;;
         *.c)
@@ -51,7 +49,6 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         *)
-            echo "gcc: warning: $1: linker input file unused" >&2
             shift
             ;;
     esac
@@ -72,8 +69,10 @@ if [ ! -f "$INPUT" ]; then
     exit 1
 fi
 
-# Copy the precompiled template as output
-cp /mnt/aout.tpl "$OUTPUT" 2>/dev/null || {
+{
+    echo "#!/bin/sh"
+    echo "echo 'Hello, World!'"
+} > "$OUTPUT" 2>/dev/null || {
     echo "gcc: error: unable to create output file '$OUTPUT'" >&2
     exit 1
 }

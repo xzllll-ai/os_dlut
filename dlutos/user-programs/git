@@ -166,7 +166,7 @@ set_push_time_china() {
 github_push_readme() {
     local url="$1"
     local branch="$2"
-    local clean repo_path owner repo api curl_bin readme content sha message body response headers put_headers http_code push_time_gmt push_time tmp_readme content_file content_line
+    local clean repo_path owner repo api graphql_api ref_api curl_bin readme content sha head_oid message body response headers put_headers http_code push_time_gmt push_time tmp_readme content_file content_line
 
     clean=$(safe_url "$url")
     case "$clean" in
@@ -203,6 +203,8 @@ github_push_readme() {
     owner="${repo_path%%/*}"
     repo="${repo_path#*/}"
     api="https://api.github.com/repos/$owner/$repo/contents/README.md"
+    ref_api="https://api.github.com/repos/$owner/$repo/git/ref/heads/$branch"
+    graphql_api="https://api.github.com/graphql"
 
     readme="$GIT_ROOT/README.md"
     [ -f "$readme" ] || readme="$GIT_ROOT/README"
@@ -216,10 +218,80 @@ github_push_readme() {
     put_headers="/tmp/github_readme_put_headers.$$"
     body="/tmp/github_readme_body.$$"
 
-    "$curl_bin" -sS -D "$headers" \
-        -H "Authorization: Bearer $GIT_TOKEN" \
-        -H "Accept: application/vnd.github+json" \
-        "$api?ref=$branch" > "$response" 2>/tmp/github_curl_err.$$ || true
+    github_api_get() {
+        local try rc
+        try=1
+        while [ "$try" -le 3 ]; do
+            rm -f "$response" "$headers" /tmp/github_curl_err.$$
+            if [ -x /mnt/busybox ]; then
+                "$busybox" wget -q -S --no-check-certificate -O "$response" \
+                    --header "Authorization: Bearer $GIT_TOKEN" \
+                    --header "Accept: application/vnd.github+json" \
+                    "$api?ref=$branch" > /dev/null 2>"$headers"
+                rc=$?
+            else
+                "$curl_bin" -sS --connect-timeout 10 --max-time 45 -D "$headers" \
+                    -H "Authorization: Bearer $GIT_TOKEN" \
+                    -H "Accept: application/vnd.github+json" \
+                    "$api?ref=$branch" > "$response" 2>/tmp/github_curl_err.$$
+                rc=$?
+            fi
+            if [ "$rc" -eq 0 ] && [ -f "$response" ]; then
+                return 0
+            fi
+            echo "  [WARN] GitHub API GET failed (try $try/3, rc=$rc)" >&2
+            cat "$headers" >&2 2>/dev/null || true
+            cat /tmp/github_curl_err.$$ >&2 2>/dev/null || true
+            sleep 1 2>/dev/null || true
+            try=$((try + 1))
+        done
+        return 1
+    }
+
+    github_api_graphql() {
+        local try rc
+        try=1
+        while [ "$try" -le 3 ]; do
+            rm -f "$response" "$put_headers" /tmp/github_curl_err.$$
+            if [ -x /mnt/busybox ]; then
+                "$busybox" wget -q -S --no-check-certificate -O "$response" \
+                    --post-file="$body" \
+                    --header "Authorization: Bearer $GIT_TOKEN" \
+                    --header "Accept: application/vnd.github+json" \
+                    --header "Content-Type: application/json" \
+                    "$graphql_api" > /dev/null 2>"$put_headers"
+                rc=$?
+                if [ "$rc" -eq 0 ] && grep -q '"createCommitOnBranch"' "$response" 2>/dev/null && ! grep -q '"errors"' "$response" 2>/dev/null; then
+                    return 0
+                fi
+                http_code="wget"
+            else
+                http_code=$("$curl_bin" -sS --connect-timeout 10 --max-time 45 -D "$put_headers" -o "$response" -w "%{http_code}" \
+                    -H "Authorization: Bearer $GIT_TOKEN" \
+                    -H "Accept: application/vnd.github+json" \
+                    -H "Content-Type: application/json" \
+                    --data-binary "@$body" \
+                    "$graphql_api" 2>/tmp/github_curl_err.$$)
+                rc=$?
+                case "$http_code" in
+                    200) grep -q '"createCommitOnBranch"' "$response" 2>/dev/null && ! grep -q '"errors"' "$response" 2>/dev/null && return 0 ;;
+                esac
+            fi
+            echo "  [WARN] GitHub GraphQL POST failed (try $try/3, rc=$rc, http=$http_code)" >&2
+            cat "$put_headers" >&2 2>/dev/null || true
+            cat /tmp/github_curl_err.$$ >&2 2>/dev/null || true
+            cat "$response" >&2 2>/dev/null || true
+            sleep 1 2>/dev/null || true
+            try=$((try + 1))
+        done
+        return 1
+    }
+
+    if ! github_api_get; then
+        echo "fatal: GitHub API GET failed; curl may be unavailable or crashing in DLUTos" >&2
+        rm -f "$response" "$headers" "$put_headers" "$body" /tmp/github_curl_err.$$
+        return 1
+    fi
 
     sha=""
     while IFS= read -r line; do
@@ -234,16 +306,48 @@ github_push_readme() {
         esac
     done < "$response"
 
-    push_time_gmt=""
+    if ! "$busybox" wget -q -S --no-check-certificate -O "$response" \
+        --header "Authorization: Bearer $GIT_TOKEN" \
+        --header "Accept: application/vnd.github+json" \
+        "$ref_api" > /dev/null 2>"$put_headers"; then
+        echo "fatal: GitHub ref GET failed; cannot find branch head" >&2
+        cat "$put_headers" >&2 2>/dev/null || true
+        rm -f "$response" "$headers" "$put_headers" "$body" /tmp/github_curl_err.$$
+        return 1
+    fi
+    head_oid=""
     while IFS= read -r line; do
         case "$line" in
-            [Dd]ate:*)
-                push_time_gmt="${line#*:}"
-                push_time_gmt="${push_time_gmt# }"
-                push_time_gmt="${push_time_gmt%}"
+            *'"sha"'*)
+                head_oid="${line#*\"sha\"}"
+                head_oid="${head_oid#*:}"
+                head_oid="${head_oid#*\"}"
+                head_oid="${head_oid%%\"*}"
+                [ -n "$head_oid" ] && break
                 ;;
         esac
-    done < "$headers"
+    done < "$response"
+    if [ -z "$head_oid" ]; then
+        echo "fatal: GitHub ref GET did not return a branch head sha" >&2
+        cat "$response" >&2 2>/dev/null || true
+        rm -f "$response" "$headers" "$put_headers" "$body" /tmp/github_curl_err.$$
+        return 1
+    fi
+
+    push_time_gmt=""
+    if [ -f "$headers" ]; then
+        while IFS= read -r line; do
+            line="${line# }"
+            line="${line# }"
+            case "$line" in
+                [Dd]ate:*)
+                    push_time_gmt="${line#*:}"
+                    push_time_gmt="${push_time_gmt# }"
+                    push_time_gmt="${push_time_gmt%}"
+                    ;;
+            esac
+        done < "$headers"
+    fi
     if [ -n "$push_time_gmt" ]; then
         set_push_time_china "$push_time_gmt"
     else
@@ -270,33 +374,16 @@ github_push_readme() {
     message="update README - DLUTos test $push_time"
 
     {
-        echo "{"
-        echo "  \"message\": \"$message\","
-        echo "  \"content\": \"$content\","
-        echo "  \"branch\": \"$branch\""
-        if [ -n "$sha" ]; then
-            echo "  ,\"sha\": \"$sha\""
-        fi
-        echo "}"
+        echo "{\"query\":\"mutation(\$input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: \$input) { commit { oid url } } }\",\"variables\":{\"input\":{\"branch\":{\"repositoryNameWithOwner\":\"$owner/$repo\",\"branchName\":\"$branch\"},\"message\":{\"headline\":\"$message\"},\"fileChanges\":{\"additions\":[{\"path\":\"README.md\",\"contents\":\"$content\"}]},\"expectedHeadOid\":\"$head_oid\"}}}"
     } > "$body"
 
-    http_code=$("$curl_bin" -sS -D "$put_headers" -o "$response" -w "%{http_code}" -X PUT \
-        -H "Authorization: Bearer $GIT_TOKEN" \
-        -H "Accept: application/vnd.github+json" \
-        -H "Content-Type: application/json" \
-        --data-binary "@$body" \
-        "$api" 2>/tmp/github_curl_err.$$)
-
-    case "$http_code" in
-        200|201)
+    if github_api_graphql; then
         echo "  Push time: $push_time"
         rm -f "$response" "$headers" "$put_headers" "$body" "$content_file" /tmp/github_curl_err.$$
         return 0
-        ;;
-    esac
+    fi
 
-    cat /tmp/github_curl_err.$$ >&2 2>/dev/null || true
-    cat "$response" >&2 2>/dev/null || true
+    echo "fatal: GitHub GraphQL POST failed; README was not updated" >&2
     rm -f "$response" "$headers" "$put_headers" "$body" "$content_file" /tmp/github_curl_err.$$
     return 1
 }
